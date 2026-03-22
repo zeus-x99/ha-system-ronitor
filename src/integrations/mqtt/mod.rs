@@ -9,6 +9,8 @@ use crate::integrations::home_assistant::discovery::{
 };
 use crate::system::models::{CpuState, DiskState, GpuState, MemoryState};
 
+const MQTT_MAX_PACKET_SIZE: usize = 64 * 1024;
+
 pub struct DiscoveryPublishArgs<'a> {
     pub config: &'a Config,
     pub identity: &'a Identity,
@@ -20,6 +22,7 @@ pub struct DiscoveryPublishArgs<'a> {
 pub fn build_mqtt_options(config: &Config, identity: &Identity, topics: &Topics) -> MqttOptions {
     let client_id = format!("ha-system-ronitor-{}", identity.node_id);
     let mut mqtt_options = MqttOptions::new(client_id, &config.mqtt_host, config.mqtt_port);
+    mqtt_options.set_max_packet_size(MQTT_MAX_PACKET_SIZE, MQTT_MAX_PACKET_SIZE);
 
     if let Some(username) = &config.mqtt_username {
         mqtt_options.set_credentials(
