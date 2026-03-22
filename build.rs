@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=vendor/pawnio/windows");
+    println!("cargo:rerun-if-changed=config.example.toml");
 
     if env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("windows") {
         return;
@@ -13,6 +14,10 @@ fn main() {
 
     if let Err(error) = copy_pawnio_bundle() {
         panic!("failed to bundle PawnIO runtime assets: {error}");
+    }
+
+    if let Err(error) = copy_config_example() {
+        panic!("failed to bundle config example: {error}");
     }
 }
 
@@ -27,6 +32,16 @@ fn copy_pawnio_bundle() -> io::Result<()> {
     let destination_dir = profile_dir.join("pawnio").join("windows");
 
     copy_dir_recursive(&source_dir, &destination_dir)
+}
+
+fn copy_config_example() -> io::Result<()> {
+    let source = PathBuf::from("config.example.toml");
+    if !source.exists() {
+        return Ok(());
+    }
+
+    let profile_dir = cargo_profile_dir()?;
+    copy_file_if_needed(&source, &profile_dir.join("config.example.toml"))
 }
 
 fn cargo_profile_dir() -> io::Result<PathBuf> {

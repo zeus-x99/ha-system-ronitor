@@ -1,8 +1,15 @@
-mod env;
+mod bootstrap;
+mod file;
+mod paths;
 
 use clap::Parser;
+use std::path::PathBuf;
 
-pub use env::load_env_files;
+pub use bootstrap::BootstrapOptions;
+pub use file::{
+    CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, load_config_file_from, seed_config_toml,
+};
+pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
 #[derive(Debug, Parser, Clone)]
 #[command(
@@ -11,6 +18,12 @@ pub use env::load_env_files;
     about = "Cross-platform system monitor for Home Assistant"
 )]
 pub struct Config {
+    #[arg(long, env = "HA_MONITOR_CONFIG_DIR", hide = true)]
+    pub config_dir: Option<PathBuf>,
+
+    #[arg(long, env = "HA_MONITOR_LOG_DIR", hide = true)]
+    pub log_dir: Option<PathBuf>,
+
     #[arg(long, env = "HA_MONITOR_MQTT_HOST")]
     pub mqtt_host: String,
 

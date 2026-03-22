@@ -1,0 +1,81 @@
+# 本地运行时，请将此文件复制为 `config.toml`。
+# 如果是已安装的 Windows 服务，请将此文件放到
+# `C:\ProgramData\ha-system-ronitor\config\config.toml`。
+
+[mqtt]
+# MQTT 服务器主机名或 IP 地址。
+host = "10.0.0.1"
+# MQTT 服务器 TCP 端口。
+port = 1883
+# 监控程序连接 MQTT 时使用的用户名。
+username = "homeassistant"
+# 监控程序连接 MQTT 时使用的密码。
+password = "change-me"
+
+[home_assistant]
+# Home Assistant MQTT 自动发现前缀。
+discovery_prefix = "homeassistant"
+# Home Assistant 的 birth/status 主题。
+status_topic = "homeassistant/status"
+# 监控数据状态主题与可用性主题的基础前缀。
+topic_prefix = "monitor/system"
+
+[device]
+# 可选的稳定设备 node_id。
+# 不填写时，程序会根据主机名自动生成。
+# node_id = "my-host"
+# 可选的设备显示名称，会显示在 Home Assistant 中。
+# 不填写时，程序会使用“<主机名> System Monitor”。
+# name = "My Host System Monitor"
+
+[sampling.cpu]
+# CPU 采样与发布间隔，单位为秒。
+interval_secs = 1
+# 用于平滑 CPU 使用率的滑动平均窗口大小。
+smoothing_window = 5
+# 即使变化很小，超过这个秒数后也会强制发布一次 CPU 状态。
+max_silence_secs = 30
+
+[sampling.gpu]
+# GPU 采样与发布间隔，单位为秒。
+interval_secs = 1
+# 即使变化很小，超过这个秒数后也会强制发布一次 GPU 状态。
+max_silence_secs = 30
+
+[sampling.memory]
+# 内存采样与发布间隔，单位为秒。
+interval_secs = 5
+# 即使变化很小，超过这个秒数后也会强制发布一次内存状态。
+max_silence_secs = 120
+
+[sampling.disk]
+# 磁盘采样与发布间隔，单位为秒。
+interval_secs = 30
+# 即使变化很小，超过这个秒数后也会强制发布一次磁盘状态。
+max_silence_secs = 900
+
+[thresholds.cpu]
+# CPU 使用率变化达到这个百分比后，才会发布新值。
+usage_pct = 1.0
+
+[thresholds.gpu]
+# GPU 使用率变化达到这个百分比后，才会发布新值。
+usage_pct = 1.0
+# GPU 显存变化达到这个 MiB 数后，才会发布新值。
+memory_change_mib = 8
+
+[thresholds.memory]
+# 内存变化达到这个 MiB 数后，才会发布新值。
+change_mib = 8
+
+[thresholds.disk]
+# 磁盘使用量变化达到这个 MiB 数后，才会发布新值。
+change_mib = 32
+
+[shutdown]
+# 是否在 Home Assistant 中暴露“关机”按钮实体。
+enable_button = false
+# 触发关机动作时要求收到的 MQTT payload。
+payload = "shutdown"
+# 为 true 时只记录关机请求，不会真正执行关机。
+dry_run = false

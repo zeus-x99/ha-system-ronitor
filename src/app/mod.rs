@@ -1,14 +1,18 @@
 use std::collections::VecDeque;
+use std::fs;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use rumqttc::{AsyncClient, Event, Outgoing, Packet, QoS};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
+use tracing_appender::non_blocking::WorkerGuard;
 
-use crate::config::{Config, load_env_files};
+use crate::config::{BootstrapOptions, Config, load_config_file_from};
 use crate::device::{Identity, Topics};
 use crate::integrations::mqtt::{
     DiscoveryPublishArgs, build_mqtt_options, is_home_assistant_birth_message,
@@ -102,10 +106,45 @@ impl<T> Default for PublishedSlot<T> {
 }
 
 pub async fn run() -> Result<()> {
-    load_env_files();
-    init_tracing();
-
+    let bootstrap = BootstrapOptions::from_current_process();
+    initialize_runtime_with(&bootstrap)?;
     let config = Config::parse();
+    run_with_config(config, async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            error!(%error, "failed to listen for ctrl-c");
+        }
+    })
+    .await
+}
+
+pub fn initialize_runtime() {
+    let _ = initialize_runtime_with(&BootstrapOptions::from_current_process());
+}
+
+pub fn initialize_runtime_with(bootstrap: &BootstrapOptions) -> Result<()> {
+    let config_directories = bootstrap.config_directories();
+    load_config_file_from(&config_directories)?;
+
+    static TRACING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    match TRACING_INIT.get_or_init(|| init_tracing(bootstrap).map_err(|error| format!("{error:#}")))
+    {
+        Ok(()) => Ok(()),
+        Err(message) => Err(anyhow!(message.clone())),
+    }
+}
+
+pub fn parse_config_from<I, T>(args: I) -> Result<Config>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    Config::try_parse_from(args).map_err(Into::into)
+}
+
+pub async fn run_with_config<F>(config: Config, shutdown_signal: F) -> Result<()>
+where
+    F: Future<Output = ()>,
+{
     let identity = Identity::detect(&config);
     let topics = Topics::from_config(&config, &identity.node_id);
     let cpu_smoothing_window = config.cpu_smoothing_window.max(1);
@@ -113,6 +152,8 @@ pub async fn run() -> Result<()> {
     info!(
         device_name = %identity.device_name,
         node_id = %identity.node_id,
+        config_dir = ?config.config_dir,
+        log_dir = ?config.log_dir,
         cpu_interval_secs = config.cpu_interval_secs,
         gpu_interval_secs = config.gpu_interval_secs,
         memory_interval_secs = config.memory_interval_secs,
@@ -160,12 +201,11 @@ pub async fn run() -> Result<()> {
     disk_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut connected = false;
+    let mut shutdown_signal = Box::pin(shutdown_signal);
 
     loop {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
-                signal.context("failed to listen for ctrl-c")?;
-
+            _ = &mut shutdown_signal => {
                 info!("shutdown signal received");
                 if connected {
                     publish_availability(&client, &topics, false).await?;
@@ -423,15 +463,36 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
+fn init_tracing(bootstrap: &BootstrapOptions) -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,rumqttc=warn".into());
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .compact()
-        .init();
+    if let Some(log_dir) = bootstrap.log_dir.as_ref() {
+        fs::create_dir_all(log_dir)
+            .with_context(|| format!("creating log directory `{}`", log_dir.display()))?;
+        let file_appender = tracing_appender::rolling::daily(log_dir, "ha-system-ronitor.log");
+        let (writer, guard) = tracing_appender::non_blocking(file_appender);
+        static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+        let _ = LOG_GUARD.set(guard);
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .with_ansi(false)
+            .compact()
+            .with_writer(writer)
+            .try_init()
+            .ok();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .compact()
+            .try_init()
+            .ok();
+    }
+
+    Ok(())
 }
 
 fn discovery_birth_delay(node_id: &str) -> Duration {
