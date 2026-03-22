@@ -115,16 +115,19 @@ impl Collector {
             .disks
             .list()
             .iter()
-            .map(|disk| {
+            .filter_map(|disk| {
                 let mount_point = disk.mount_point().display().to_string();
                 let disk_id = disk_component_id(&mount_point, &disk.name().to_string_lossy());
                 let total = disk.total_space();
+                if total == 0 {
+                    return None;
+                }
                 let available = disk.available_space();
                 let used = total.saturating_sub(available);
                 let usage = percent(used, total);
                 let file_system = disk.file_system().to_string_lossy().into_owned();
 
-                (
+                Some((
                     disk_id,
                     DiskPayload {
                         name: disk.name().to_string_lossy().into_owned(),
@@ -135,7 +138,7 @@ impl Collector {
                         used,
                         usage,
                     },
-                )
+                ))
             })
             .collect::<BTreeMap<_, _>>();
 
