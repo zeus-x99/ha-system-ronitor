@@ -86,6 +86,65 @@ Cross-platform system monitor written in Rust, publishing CPU, GPU, memory, and 
 - A running MQTT broker already connected to Home Assistant
 - Home Assistant MQTT integration enabled
 
+## Nix Flake
+
+This repository exports:
+
+- `packages.<system>.default`: the `ha-system-ronitor` binary package
+- `apps.<system>.default`: `nix run` entry point
+- `nixosModules.default`: reusable NixOS module
+
+Build locally:
+
+```bash
+nix build .#default
+```
+
+Run directly with environment variables:
+
+```bash
+HA_MONITOR_MQTT_HOST=127.0.0.1 nix run .#default
+```
+
+Use from another NixOS flake:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    ha-system-ronitor.url = "github:zeus-x99/ha-system-ronitor";
+  };
+
+  outputs = { nixpkgs, ha-system-ronitor, ... }: {
+    nixosConfigurations.router = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ha-system-ronitor.nixosModules.default
+        {
+          services.ha-system-ronitor = {
+            enable = true;
+            mqtt.host = "127.0.0.1";
+            mqtt.port = 1883;
+            mqtt.username = "homeassistant";
+            environmentFile = "/run/secrets/ha-system-ronitor.env";
+            deviceName = "Router System Monitor";
+            topicPrefix = "monitor/system";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Example secret file:
+
+```bash
+HA_MONITOR_MQTT_PASSWORD=your-password
+```
+
+If your broker allows anonymous access, leave both `mqtt.username` and the password unset.
+
 ## Run
 
 Create your local config first:
