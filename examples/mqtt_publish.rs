@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     };
     let retain = args.any(|arg| arg == "--retain");
 
-    let mut options = MqttOptions::new("ha-system-monitor-publish", host, port);
+    let mut options = MqttOptions::new("ha-system-ronitor-publish", host, port);
     options.set_credentials(username, password);
     options.set_keep_alive(Duration::from_secs(10));
 

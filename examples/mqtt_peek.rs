@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
     let username = env_required("HA_MONITOR_MQTT_USERNAME")?;
     let password = env_required("HA_MONITOR_MQTT_PASSWORD")?;
 
-    let mut options = MqttOptions::new("ha-system-monitor-peek", host, port);
+    let mut options = MqttOptions::new("ha-system-ronitor-peek", host, port);
     options.set_credentials(username, password);
     options.set_keep_alive(Duration::from_secs(10));
 

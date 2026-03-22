@@ -18,7 +18,7 @@ pub struct DiscoveryPublishArgs<'a> {
 }
 
 pub fn build_mqtt_options(config: &Config, identity: &Identity, topics: &Topics) -> MqttOptions {
-    let client_id = format!("ha-system-monitor-{}", identity.node_id);
+    let client_id = format!("ha-system-ronitor-{}", identity.node_id);
     let mut mqtt_options = MqttOptions::new(client_id, &config.mqtt_host, config.mqtt_port);
 
     if let Some(username) = &config.mqtt_username {

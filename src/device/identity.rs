@@ -31,7 +31,7 @@ impl Identity {
 
         Self {
             node_id: node_id.clone(),
-            device_id: format!("ha-system-monitor-{node_id}"),
+            device_id: format!("ha-system-ronitor-{node_id}"),
             device_name,
             host_name,
             os_name,

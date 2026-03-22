@@ -1,5 +1,5 @@
 [package]
-name = "ha-system-monitor"
+name = "ha-system-ronitor"
 version = "0.1.0"
 edition = "2024"
 

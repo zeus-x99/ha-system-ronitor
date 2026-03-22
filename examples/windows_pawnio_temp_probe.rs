@@ -7,7 +7,7 @@ mod app {
 
     use anyhow::{Result, bail};
     use clap::Parser;
-    use ha_system_monitor::system::pawnio::PawnIoCpuTemperatureReader;
+    use ha_system_ronitor::system::pawnio::PawnIoCpuTemperatureReader;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,

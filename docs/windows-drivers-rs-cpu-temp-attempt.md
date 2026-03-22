@@ -41,9 +41,9 @@ Build result:
 
 A Windows-only Rust probe was added to this project:
 
-- `C:\Users\zeus\Desktop\tmp\ha-system-monitor\examples\windows_thermal_probe.rs`
-- `C:\Users\zeus\Desktop\tmp\ha-system-monitor\examples\windows_kmdf_temp_client.rs`
-- `C:\Users\zeus\Desktop\tmp\ha-system-monitor\experiments\windows_kmdf_cpu_temp_driver`
+- `C:\Users\zeus\Desktop\tmp\ha-system-ronitor\examples\windows_thermal_probe.rs`
+- `C:\Users\zeus\Desktop\tmp\ha-system-ronitor\examples\windows_kmdf_temp_client.rs`
+- `C:\Users\zeus\Desktop\tmp\ha-system-ronitor\experiments\windows_kmdf_cpu_temp_driver`
 
 Run it with:
 
@@ -54,13 +54,13 @@ cargo run --example windows_thermal_probe
 If the current terminal still cannot find `clang`, load the helper first:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\zeus\Desktop\tmp\ha-system-monitor\scripts\enter-driver-env.ps1
+powershell -ExecutionPolicy Bypass -File C:\Users\zeus\Desktop\tmp\ha-system-ronitor\scripts\enter-driver-env.ps1
 ```
 
 Or use the command wrapper that injects the LLVM environment for one cargo run:
 
 ```powershell
-C:\Users\zeus\Desktop\tmp\ha-system-monitor\scripts\cargo-driver-build.cmd run --example windows_thermal_probe
+C:\Users\zeus\Desktop\tmp\ha-system-ronitor\scripts\cargo-driver-build.cmd run --example windows_thermal_probe
 ```
 
 Probe result on this machine:
@@ -115,8 +115,8 @@ So the current state is:
 
 To make the next step repeatable, the repo now includes:
 
-- `C:\Users\zeus\Desktop\tmp\ha-system-monitor\scripts\install-kmdf-temp-driver.ps1`
-- `C:\Users\zeus\Desktop\tmp\ha-system-monitor\scripts\install-kmdf-temp-driver.cmd`
+- `C:\Users\zeus\Desktop\tmp\ha-system-ronitor\scripts\install-kmdf-temp-driver.ps1`
+- `C:\Users\zeus\Desktop\tmp\ha-system-ronitor\scripts\install-kmdf-temp-driver.cmd`
 
 What the installer does:
 
@@ -140,7 +140,7 @@ Why the installer now uses `devcon` for the final bind:
 Recommended command from an Administrator terminal:
 
 ```powershell
-C:\Users\zeus\Desktop\tmp\ha-system-monitor\scripts\install-kmdf-temp-driver.cmd
+C:\Users\zeus\Desktop\tmp\ha-system-ronitor\scripts\install-kmdf-temp-driver.cmd
 ```
 
 Then validate the user-mode side with:

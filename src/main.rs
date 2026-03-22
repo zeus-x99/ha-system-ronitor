@@ -2,5 +2,5 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    ha_system_monitor::app::run().await
+    ha_system_ronitor::app::run().await
 }

@@ -1,6 +1,6 @@
-# ha-system-monitor
+# ha-system-ronitor
 
-Cross-platform system monitor written in Rust, publishing CPU, memory, swap, and disk metrics to Home Assistant through MQTT Device Discovery.
+Cross-platform system monitor written in Rust, publishing CPU, GPU, memory, and disk metrics to Home Assistant through MQTT Device Discovery.
 
 ## Why this design
 
@@ -13,11 +13,9 @@ Cross-platform system monitor written in Rust, publishing CPU, memory, swap, and
 
 - Global CPU usage
 - Best-effort CPU package temperature
-- Best-effort GPU usage / dedicated memory usage / temperature
-- CPU model / physical cores / logical threads
-- Uptime / process count
+- CPU model / OS version / uptime
+- Best-effort GPU usage / dedicated memory used / available / total / temperature
 - Total memory / used memory / memory usage
-- Total swap / used swap / swap usage
 - Per-disk total / available / used / usage
 - Optional Home Assistant shutdown button that can power off the host
 
@@ -25,13 +23,13 @@ Cross-platform system monitor written in Rust, publishing CPU, memory, swap, and
 
 - CPU: high frequency, default every 1 second
 - GPU: high frequency, default every 1 second
-- Memory and swap: medium frequency, default every 5 seconds
+- Memory: medium frequency, default every 5 seconds
 - Disk: low frequency, default every 30 seconds
 - State is published only when values change enough to matter, reducing Home Assistant update pressure
 - CPU uses a moving average smoothing window before publish, reducing jitter
 - Runtime metadata and temperature snapshots are refreshed every 1 second so `cpu_package_temp` tracks the fast CPU publish path
 - A max silence timer forces a refresh occasionally even if values stay within thresholds
-- Defaults: CPU and GPU usage threshold 1.0%, GPU and memory/swap delta 8 MiB, disk delta 32 MiB
+- Defaults: CPU and GPU usage threshold 1.0%, GPU and memory delta 8 MiB, disk delta 32 MiB
 - Defaults: CPU smoothing window 5 samples, max silence 30s / 30s / 120s / 900s
 
 ## Temperature support
