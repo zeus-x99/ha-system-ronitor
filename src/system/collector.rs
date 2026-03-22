@@ -41,17 +41,16 @@ impl Collector {
         );
         system.refresh_memory();
 
-        let disks = Disks::new_with_refreshed_list();
-        let components = Components::new_with_refreshed_list();
-        let mut cpu_temperature_reader = CpuTemperatureReader::new();
-        let gpu_reader = GpuReader::new();
-
         let cpu_model = cpu_usage_system
             .cpus()
             .first()
             .map(|cpu| cpu.brand().trim().to_string())
             .filter(|brand| !brand.is_empty())
             .unwrap_or_else(|| "Unknown CPU".to_string());
+        let disks = Disks::new_with_refreshed_list();
+        let components = Components::new_with_refreshed_list();
+        let mut cpu_temperature_reader = CpuTemperatureReader::new();
+        let gpu_reader = GpuReader::new(Some(&cpu_model));
         let cpu_package_temp = cpu_temperature_reader.read(&components);
         let gpu_temperature = detect_gpu_temp_from_components(&components);
 
