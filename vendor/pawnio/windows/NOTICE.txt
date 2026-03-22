@@ -1,0 +1,12 @@
+Vendored official PawnIO module asset.
+
+- Module: AMDFamily17.bin
+- Source: https://github.com/namazso/PawnIO.Modules
+- Release: 0.2.3
+- Release date: 2026-02-25
+- Download: https://github.com/namazso/PawnIO.Modules/releases/download/0.2.3/release_0_2_3.zip
+
+This project vendors only the signed PawnIO module binary and its license file.
+PawnIOLib.dll and the Microsoft-signed PawnIO driver are not bundled here; the
+runtime first checks for a local pawnio/windows/PawnIOLib.dll copy and then
+falls back to an installed PawnIO copy under C:\Program Files\PawnIO.
