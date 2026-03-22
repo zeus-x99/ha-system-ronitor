@@ -104,13 +104,13 @@ pub struct GpuReader {
 #[cfg(target_os = "windows")]
 impl Default for GpuReader {
     fn default() -> Self {
-        Self::new(None)
+        Self::new()
     }
 }
 
 #[cfg(target_os = "windows")]
 impl GpuReader {
-    pub fn new(_cpu_model: Option<&str>) -> Self {
+    pub fn new() -> Self {
         Self {
             nvml_reader: NvidiaGpuReader::new(),
         }
@@ -169,15 +169,15 @@ mod linux_native {
 
     impl Default for GpuReader {
         fn default() -> Self {
-            Self::new(None)
+            Self::new()
         }
     }
 
     impl GpuReader {
-        pub fn new(cpu_model: Option<&str>) -> Self {
+        pub fn new() -> Self {
             let backend = NvidiaGpuReader::new()
                 .map(GpuBackend::Nvidia)
-                .or_else(|| LinuxSysfsGpuReader::new(cpu_model).map(GpuBackend::Sysfs));
+                .or_else(|| LinuxSysfsGpuReader::new().map(GpuBackend::Sysfs));
 
             Self { backend }
         }
@@ -197,18 +197,18 @@ mod linux_native {
     }
 
     impl LinuxSysfsGpuReader {
-        fn new(cpu_model: Option<&str>) -> Option<Self> {
+        fn new() -> Option<Self> {
             let mut candidates = fs::read_dir("/sys/class/drm")
                 .ok()?
                 .filter_map(Result::ok)
-                .filter_map(|entry| Self::from_card_path(entry.path(), cpu_model))
+                .filter_map(|entry| Self::from_card_path(entry.path()))
                 .collect::<Vec<_>>();
 
             candidates.sort_by_key(Self::score);
             candidates.pop()
         }
 
-        fn from_card_path(card_path: PathBuf, cpu_model: Option<&str>) -> Option<Self> {
+        fn from_card_path(card_path: PathBuf) -> Option<Self> {
             let card_name = card_path.file_name()?.to_str()?;
             if !card_name.starts_with("card")
                 || !card_name
@@ -226,8 +226,7 @@ mod linux_native {
 
             let driver_name = driver_name(&device_path)?;
             let vendor_id = read_hex_u64(device_path.join("vendor"))?;
-            let device_id = read_hex_u64(device_path.join("device"))?;
-            let gpu_name = gpu_name(vendor_id, device_id, &driver_name, cpu_model);
+            let gpu_name = gpu_name(vendor_id, &driver_name);
             let usage_source = usage_source(&card_path, &device_path, &driver_name);
             let memory_source = memory_source(&device_path);
 
@@ -354,18 +353,7 @@ mod linux_native {
         None
     }
 
-    fn gpu_name(
-        vendor_id: u64,
-        device_id: u64,
-        driver_name: &str,
-        cpu_model: Option<&str>,
-    ) -> String {
-        if vendor_id == 0x8086 {
-            if let Some(marketing_name) = intel_marketing_name(device_id, cpu_model) {
-                return marketing_name.to_string();
-            }
-        }
-
+    fn gpu_name(vendor_id: u64, driver_name: &str) -> String {
         let vendor = match vendor_id {
             0x10de => "NVIDIA",
             0x1002 => "AMD",
@@ -375,15 +363,6 @@ mod linux_native {
         };
 
         format!("{vendor} GPU ({driver_name})")
-    }
-
-    fn intel_marketing_name(device_id: u64, cpu_model: Option<&str>) -> Option<&'static str> {
-        let cpu_model = cpu_model?.to_ascii_uppercase();
-
-        match device_id {
-            0x46d4 if cpu_model.contains("N150") => Some("Intel Graphics"),
-            _ => None,
-        }
     }
 
     fn driver_name(device_path: &Path) -> Option<String> {
@@ -414,27 +393,6 @@ mod linux_native {
             (value as f64 / total as f64) * 100.0
         }
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::intel_marketing_name;
-
-        #[test]
-        fn maps_intel_n150_to_marketing_name() {
-            assert_eq!(
-                intel_marketing_name(0x46d4, Some("Intel(R) N150")),
-                Some("Intel Graphics")
-            );
-        }
-
-        #[test]
-        fn leaves_unknown_intel_sku_unmapped() {
-            assert_eq!(
-                intel_marketing_name(0x46d4, Some("12th Gen Intel(R) Core(TM) i5-1240P")),
-                None
-            );
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -446,7 +404,7 @@ pub struct GpuReader;
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl GpuReader {
-    pub fn new(_cpu_model: Option<&str>) -> Self {
+    pub fn new() -> Self {
         Self
     }
 
