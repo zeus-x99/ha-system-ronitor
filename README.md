@@ -205,12 +205,52 @@ HA_MONITOR_MQTT_HOST=127.0.0.1 nix run .#default
         {
           services.ha-system-ronitor = {
             enable = true;
-            mqtt.host = "127.0.0.1";
-            mqtt.port = 1883;
-            mqtt.username = "homeassistant";
             environmentFile = "/run/secrets/ha-system-ronitor.env";
-            deviceName = "Router System Monitor";
-            topicPrefix = "monitor/system";
+            settings = {
+              mqtt = {
+                host = "127.0.0.1";
+                port = 1883;
+                username = "homeassistant";
+              };
+              home_assistant = {
+                discovery_prefix = "homeassistant";
+                status_topic = "homeassistant/status";
+                topic_prefix = "monitor/system";
+              };
+              device = {
+                node_id = "router";
+                name = "Router System Monitor";
+              };
+              sampling.cpu = {
+                interval_secs = 1;
+                smoothing_window = 5;
+                max_silence_secs = 30;
+              };
+              sampling.gpu = {
+                interval_secs = 1;
+                max_silence_secs = 30;
+              };
+              sampling.memory = {
+                interval_secs = 5;
+                max_silence_secs = 120;
+              };
+              sampling.disk = {
+                interval_secs = 30;
+                max_silence_secs = 900;
+              };
+              thresholds.cpu.usage_pct = 1.0;
+              thresholds.gpu = {
+                usage_pct = 1.0;
+                memory_change_mib = 8;
+              };
+              thresholds.memory.change_mib = 8;
+              thresholds.disk.change_mib = 32;
+              shutdown = {
+                enable_button = false;
+                payload = "shutdown";
+                dry_run = false;
+              };
+            };
           };
         }
       ];

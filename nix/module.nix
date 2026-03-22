@@ -7,7 +7,9 @@
 }:
 let
   cfg = config.services.ha-system-ronitor;
+  tomlFormat = pkgs.formats.toml { };
   inherit (lib)
+    attrByPath
     literalExpression
     mkEnableOption
     mkIf
@@ -16,6 +18,11 @@ let
     types
     ;
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  renderedConfig = tomlFormat.generate "ha-system-ronitor-config.toml" cfg.settings;
+  configDir = pkgs.runCommand "ha-system-ronitor-config-dir" { } ''
+    mkdir -p $out
+    ln -s ${renderedConfig} $out/config.toml
+  '';
   execStart = lib.concatStringsSep " " (
     [ (lib.getExe cfg.package) ] ++ map lib.escapeShellArg cfg.extraArgs
   );
@@ -101,170 +108,149 @@ in
       description = "Extra systemd.serviceConfig overrides merged into the unit.";
     };
 
-    mqtt = {
-      host = mkOption {
-        type = types.str;
-        default = "127.0.0.1";
-        description = "MQTT broker host.";
+    settings = mkOption {
+      type = tomlFormat.type;
+      default = {
+        mqtt.port = 1883;
+        home_assistant = {
+          discovery_prefix = "homeassistant";
+          status_topic = "homeassistant/status";
+          topic_prefix = "monitor/system";
+        };
+        sampling = {
+          cpu = {
+            interval_secs = 1;
+            smoothing_window = 5;
+            max_silence_secs = 30;
+          };
+          gpu = {
+            interval_secs = 1;
+            max_silence_secs = 30;
+          };
+          memory = {
+            interval_secs = 5;
+            max_silence_secs = 120;
+          };
+          disk = {
+            interval_secs = 30;
+            max_silence_secs = 900;
+          };
+        };
+        thresholds = {
+          cpu.usage_pct = 1.0;
+          gpu = {
+            usage_pct = 1.0;
+            memory_change_mib = 8;
+          };
+          memory.change_mib = 8;
+          disk.change_mib = 32;
+        };
+        shutdown = {
+          enable_button = false;
+          payload = "shutdown";
+          dry_run = false;
+        };
       };
-
-      port = mkOption {
-        type = types.port;
-        default = 1883;
-        description = "MQTT broker port.";
-      };
-
-      username = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional MQTT username.";
-      };
-
-      password = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional MQTT password. Prefer environmentFile for secrets.";
-      };
-    };
-
-    discoveryPrefix = mkOption {
-      type = types.str;
-      default = "homeassistant";
-      description = "Home Assistant MQTT discovery prefix.";
-    };
-
-    homeAssistantStatusTopic = mkOption {
-      type = types.str;
-      default = "homeassistant/status";
-      description = "Home Assistant MQTT birth topic.";
-    };
-
-    topicPrefix = mkOption {
-      type = types.str;
-      default = "monitor/system";
-      description = "Prefix for state and availability topics.";
-    };
-
-    nodeId = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Stable Home Assistant node id. Defaults to hostname when unset.";
-    };
-
-    deviceName = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Device name shown in Home Assistant.";
-    };
-
-    enableShutdownButton = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Expose a Home Assistant shutdown button.";
-    };
-
-    shutdownPayload = mkOption {
-      type = types.str;
-      default = "shutdown";
-      description = "Expected MQTT payload for the shutdown button.";
-    };
-
-    shutdownDryRun = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Log shutdown requests without powering off the host.";
-    };
-
-    cpuIntervalSecs = mkOption {
-      type = types.ints.positive;
-      default = 1;
-      description = "CPU publish interval in seconds.";
-    };
-
-    gpuIntervalSecs = mkOption {
-      type = types.ints.positive;
-      default = 1;
-      description = "GPU publish interval in seconds.";
-    };
-
-    memoryIntervalSecs = mkOption {
-      type = types.ints.positive;
-      default = 5;
-      description = "Memory publish interval in seconds.";
-    };
-
-    diskIntervalSecs = mkOption {
-      type = types.ints.positive;
-      default = 30;
-      description = "Disk publish interval in seconds.";
-    };
-
-    cpuChangeThresholdPct = mkOption {
-      type = types.float;
-      default = 1.0;
-      description = "Minimum CPU usage change before publishing.";
-    };
-
-    gpuUsageChangeThresholdPct = mkOption {
-      type = types.float;
-      default = 1.0;
-      description = "Minimum GPU usage change before publishing.";
-    };
-
-    gpuMemoryChangeThresholdMiB = mkOption {
-      type = types.ints.positive;
-      default = 8;
-      description = "Minimum GPU memory delta before publishing.";
-    };
-
-    memoryChangeThresholdMiB = mkOption {
-      type = types.ints.positive;
-      default = 8;
-      description = "Minimum memory delta before publishing.";
-    };
-
-    diskChangeThresholdMiB = mkOption {
-      type = types.ints.positive;
-      default = 32;
-      description = "Minimum disk delta before publishing.";
-    };
-
-    cpuSmoothingWindow = mkOption {
-      type = types.ints.positive;
-      default = 5;
-      description = "CPU smoothing sample window size.";
-    };
-
-    cpuMaxSilenceSecs = mkOption {
-      type = types.ints.positive;
-      default = 30;
-      description = "Force CPU publish after this silence window.";
-    };
-
-    gpuMaxSilenceSecs = mkOption {
-      type = types.ints.positive;
-      default = 30;
-      description = "Force GPU publish after this silence window.";
-    };
-
-    memoryMaxSilenceSecs = mkOption {
-      type = types.ints.positive;
-      default = 120;
-      description = "Force memory publish after this silence window.";
-    };
-
-    diskMaxSilenceSecs = mkOption {
-      type = types.ints.positive;
-      default = 900;
-      description = "Force disk publish after this silence window.";
+      defaultText = literalExpression ''
+        {
+          mqtt.port = 1883;
+          home_assistant = {
+            discovery_prefix = "homeassistant";
+            status_topic = "homeassistant/status";
+            topic_prefix = "monitor/system";
+          };
+          sampling = {
+            cpu = {
+              interval_secs = 1;
+              smoothing_window = 5;
+              max_silence_secs = 30;
+            };
+            gpu = {
+              interval_secs = 1;
+              max_silence_secs = 30;
+            };
+            memory = {
+              interval_secs = 5;
+              max_silence_secs = 120;
+            };
+            disk = {
+              interval_secs = 30;
+              max_silence_secs = 900;
+            };
+          };
+          thresholds = {
+            cpu.usage_pct = 1.0;
+            gpu = {
+              usage_pct = 1.0;
+              memory_change_mib = 8;
+            };
+            memory.change_mib = 8;
+            disk.change_mib = 32;
+          };
+          shutdown = {
+            enable_button = false;
+            payload = "shutdown";
+            dry_run = false;
+          };
+        }
+      '';
+      example = literalExpression ''
+        {
+          mqtt = {
+            host = "127.0.0.1";
+            port = 1883;
+            username = "homeassistant";
+          };
+          home_assistant = {
+            discovery_prefix = "homeassistant";
+            status_topic = "homeassistant/status";
+            topic_prefix = "monitor/system";
+          };
+          device = {
+            node_id = "router";
+            name = "Router System Monitor";
+          };
+          sampling.cpu = {
+            interval_secs = 1;
+            smoothing_window = 5;
+            max_silence_secs = 30;
+          };
+          sampling.gpu = {
+            interval_secs = 1;
+            max_silence_secs = 30;
+          };
+          sampling.memory = {
+            interval_secs = 5;
+            max_silence_secs = 120;
+          };
+          sampling.disk = {
+            interval_secs = 30;
+            max_silence_secs = 900;
+          };
+          thresholds.cpu.usage_pct = 1.0;
+          thresholds.gpu = {
+            usage_pct = 1.0;
+            memory_change_mib = 8;
+          };
+          thresholds.memory.change_mib = 8;
+          thresholds.disk.change_mib = 32;
+          shutdown = {
+            enable_button = false;
+            payload = "shutdown";
+            dry_run = false;
+          };
+        }
+      '';
+      description = "Configuration rendered to config.toml. Put non-secret settings here; use environmentFile for secrets such as mqtt.password.";
     };
   };
 
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = !(cfg.mqtt.password != null && cfg.environmentFile != null);
-        message = "Use either services.ha-system-ronitor.mqtt.password or environmentFile, not both.";
+        assertion =
+          !(attrByPath [ "mqtt" "password" ] null cfg.settings != null && cfg.environmentFile != null);
+        message = "Use either services.ha-system-ronitor.settings.mqtt.password or environmentFile, not both.";
       }
     ];
 
@@ -289,40 +275,7 @@ in
         ;
 
       environment = {
-        HA_MONITOR_MQTT_HOST = cfg.mqtt.host;
-        HA_MONITOR_MQTT_PORT = builtins.toString cfg.mqtt.port;
-        HA_MONITOR_DISCOVERY_PREFIX = cfg.discoveryPrefix;
-        HA_MONITOR_HOME_ASSISTANT_STATUS_TOPIC = cfg.homeAssistantStatusTopic;
-        HA_MONITOR_TOPIC_PREFIX = cfg.topicPrefix;
-        HA_MONITOR_ENABLE_SHUTDOWN_BUTTON = lib.boolToString cfg.enableShutdownButton;
-        HA_MONITOR_SHUTDOWN_PAYLOAD = cfg.shutdownPayload;
-        HA_MONITOR_SHUTDOWN_DRY_RUN = lib.boolToString cfg.shutdownDryRun;
-        HA_MONITOR_CPU_INTERVAL_SECS = builtins.toString cfg.cpuIntervalSecs;
-        HA_MONITOR_GPU_INTERVAL_SECS = builtins.toString cfg.gpuIntervalSecs;
-        HA_MONITOR_MEMORY_INTERVAL_SECS = builtins.toString cfg.memoryIntervalSecs;
-        HA_MONITOR_DISK_INTERVAL_SECS = builtins.toString cfg.diskIntervalSecs;
-        HA_MONITOR_CPU_CHANGE_THRESHOLD_PCT = builtins.toString cfg.cpuChangeThresholdPct;
-        HA_MONITOR_GPU_USAGE_CHANGE_THRESHOLD_PCT = builtins.toString cfg.gpuUsageChangeThresholdPct;
-        HA_MONITOR_GPU_MEMORY_CHANGE_THRESHOLD_MIB = builtins.toString cfg.gpuMemoryChangeThresholdMiB;
-        HA_MONITOR_MEMORY_CHANGE_THRESHOLD_MIB = builtins.toString cfg.memoryChangeThresholdMiB;
-        HA_MONITOR_DISK_CHANGE_THRESHOLD_MIB = builtins.toString cfg.diskChangeThresholdMiB;
-        HA_MONITOR_CPU_SMOOTHING_WINDOW = builtins.toString cfg.cpuSmoothingWindow;
-        HA_MONITOR_CPU_MAX_SILENCE_SECS = builtins.toString cfg.cpuMaxSilenceSecs;
-        HA_MONITOR_GPU_MAX_SILENCE_SECS = builtins.toString cfg.gpuMaxSilenceSecs;
-        HA_MONITOR_MEMORY_MAX_SILENCE_SECS = builtins.toString cfg.memoryMaxSilenceSecs;
-        HA_MONITOR_DISK_MAX_SILENCE_SECS = builtins.toString cfg.diskMaxSilenceSecs;
-      }
-      // optionalAttrs (cfg.mqtt.username != null) {
-        HA_MONITOR_MQTT_USERNAME = cfg.mqtt.username;
-      }
-      // optionalAttrs (cfg.mqtt.password != null) {
-        HA_MONITOR_MQTT_PASSWORD = cfg.mqtt.password;
-      }
-      // optionalAttrs (cfg.nodeId != null) {
-        HA_MONITOR_NODE_ID = cfg.nodeId;
-      }
-      // optionalAttrs (cfg.deviceName != null) {
-        HA_MONITOR_DEVICE_NAME = cfg.deviceName;
+        HA_MONITOR_CONFIG_DIR = configDir;
       }
       // cfg.extraEnvironment;
 
