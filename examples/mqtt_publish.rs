@@ -1,16 +1,21 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ha_system_ronitor::config::{candidate_config_directories, load_config_file_from};
 use rumqttc::{AsyncClient, MqttOptions, QoS};
 
 fn env_required(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("missing environment variable {name}"))
 }
 
+fn load_runtime_defaults() -> Result<()> {
+    load_config_file_from(&candidate_config_directories())?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = dotenvy::from_filename(".env");
-    let _ = dotenvy::from_filename_override(".env.local");
+    load_runtime_defaults()?;
 
     let host = env_required("HA_MONITOR_MQTT_HOST")?;
     let port = std::env::var("HA_MONITOR_MQTT_PORT")
