@@ -283,6 +283,8 @@ in
         ExecStart = execStart;
         User = cfg.user;
         Group = cfg.group;
+        AmbientCapabilities = [ "CAP_PERFMON" ];
+        CapabilityBoundingSet = [ "CAP_PERFMON" ];
         Restart = "always";
         RestartSec = "5s";
         NoNewPrivileges = true;

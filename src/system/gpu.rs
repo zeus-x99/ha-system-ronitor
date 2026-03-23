@@ -124,9 +124,13 @@ impl GpuReader {
 #[cfg(target_os = "linux")]
 mod linux_native {
     use std::fs;
+    use std::mem::size_of;
+    use std::os::fd::RawFd;
     use std::path::{Path, PathBuf};
+    use std::time::Instant;
 
     use chrono::Utc;
+    use tracing::debug;
 
     use crate::system::gpu::NvidiaGpuReader;
     use crate::system::models::GpuState;
@@ -155,10 +159,56 @@ mod linux_native {
     #[derive(Debug)]
     enum UsageSource {
         BusyPercent(PathBuf),
+        I915Pmu(I915PmuUsageReader),
         IntelFrequency {
             current_path: PathBuf,
             max_path: PathBuf,
         },
+    }
+
+    #[derive(Debug)]
+    struct I915PmuUsageReader {
+        counters: Vec<PmuCounter>,
+        last_sample: Option<PmuSnapshot>,
+    }
+
+    #[derive(Debug)]
+    struct PmuCounter {
+        name: String,
+        fd: RawFd,
+    }
+
+    #[derive(Debug)]
+    struct PmuSnapshot {
+        captured_at: Instant,
+        values: Vec<u64>,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct PerfEventAttr {
+        type_: u32,
+        size: u32,
+        config: u64,
+        sample_period_or_freq: u64,
+        sample_type: u64,
+        read_format: u64,
+        flags: u64,
+        wakeup_events_or_watermark: u32,
+        bp_type: u32,
+        bp_addr_or_config1: u64,
+        bp_len_or_config2: u64,
+        branch_sample_type: u64,
+        sample_regs_user: u64,
+        sample_stack_user: u32,
+        clockid: i32,
+        sample_regs_intr: u64,
+        aux_watermark: u32,
+        sample_max_stack: u16,
+        reserved_2: u16,
+        aux_sample_size: u32,
+        reserved_3: u32,
+        sig_data: u64,
     }
 
     #[derive(Debug)]
@@ -183,12 +233,12 @@ mod linux_native {
         }
 
         pub fn read(&mut self) -> Option<GpuState> {
-            self.backend.as_ref().and_then(GpuBackend::read)
+            self.backend.as_mut().and_then(GpuBackend::read)
         }
     }
 
     impl GpuBackend {
-        fn read(&self) -> Option<GpuState> {
+        fn read(&mut self) -> Option<GpuState> {
             match self {
                 Self::Nvidia(reader) => reader.read(),
                 Self::Sysfs(reader) => reader.read(),
@@ -259,10 +309,10 @@ mod linux_native {
             )
         }
 
-        fn read(&self) -> Option<GpuState> {
+        fn read(&mut self) -> Option<GpuState> {
             let gpu_usage = self
                 .usage_source
-                .as_ref()
+                .as_mut()
                 .and_then(UsageSource::read)
                 .unwrap_or(0.0);
 
@@ -287,9 +337,10 @@ mod linux_native {
     }
 
     impl UsageSource {
-        fn read(&self) -> Option<f32> {
+        fn read(&mut self) -> Option<f32> {
             match self {
                 Self::BusyPercent(path) => read_trimmed(path)?.parse::<f32>().ok(),
+                Self::I915Pmu(reader) => reader.read(),
                 Self::IntelFrequency {
                     current_path,
                     max_path,
@@ -301,6 +352,89 @@ mod linux_native {
                     }
 
                     Some(((current / max) * 100.0).clamp(0.0, 100.0))
+                }
+            }
+        }
+    }
+
+    impl I915PmuUsageReader {
+        fn new() -> Option<Self> {
+            let pmu_root = Path::new("/sys/devices/i915");
+            if !pmu_root.exists() {
+                return None;
+            }
+
+            let perf_type = read_trimmed(pmu_root.join("type"))?.parse::<u32>().ok()?;
+            let cpu = parse_first_cpu(&read_trimmed(pmu_root.join("cpumask"))?)?;
+            let counters = busy_event_names(pmu_root.join("events"))
+                .into_iter()
+                .filter_map(|name| {
+                    let config = read_event_config(pmu_root, &name)?;
+                    open_counter(perf_type, cpu, &name, config)
+                        .map_err(|error| {
+                            debug!(event = %name, %error, "i915 PMU counter init failed");
+                            error
+                        })
+                        .ok()
+                })
+                .collect::<Vec<_>>();
+
+            if counters.is_empty() {
+                return None;
+            }
+
+            Some(Self {
+                counters,
+                last_sample: None,
+            })
+        }
+
+        fn read(&mut self) -> Option<f32> {
+            let snapshot = self.snapshot()?;
+            let previous = self.last_sample.replace(snapshot)?;
+            let current = self.last_sample.as_ref()?;
+            let elapsed_ns = current
+                .captured_at
+                .duration_since(previous.captured_at)
+                .as_nanos() as f64;
+            if elapsed_ns <= 0.0 {
+                return Some(0.0);
+            }
+
+            let busy_ns = previous
+                .values
+                .iter()
+                .zip(&current.values)
+                .map(|(before, after)| after.saturating_sub(*before))
+                .sum::<u64>() as f64;
+
+            Some(((busy_ns / elapsed_ns) * 100.0).clamp(0.0, 100.0) as f32)
+        }
+
+        fn snapshot(&self) -> Option<PmuSnapshot> {
+            let mut values = Vec::with_capacity(self.counters.len());
+            for counter in &self.counters {
+                let value = read_counter(counter)
+                    .map_err(|error| {
+                        debug!(event = %counter.name, %error, "i915 PMU read failed");
+                        error
+                    })
+                    .ok()?;
+                values.push(value);
+            }
+
+            Some(PmuSnapshot {
+                captured_at: Instant::now(),
+                values,
+            })
+        }
+    }
+
+    impl Drop for I915PmuUsageReader {
+        fn drop(&mut self) {
+            for counter in &self.counters {
+                unsafe {
+                    libc::close(counter.fd);
                 }
             }
         }
@@ -325,6 +459,10 @@ mod linux_native {
         }
 
         if matches!(driver_name, "i915" | "xe") {
+            if let Some(reader) = I915PmuUsageReader::new() {
+                return Some(UsageSource::I915Pmu(reader));
+            }
+
             for current_name in ["gt_act_freq_mhz", "gt_cur_freq_mhz"] {
                 let current_path = card_path.join(current_name);
                 let max_path = card_path.join("gt_max_freq_mhz");
@@ -386,11 +524,140 @@ mod linux_native {
         u64::from_str_radix(value.trim_start_matches("0x"), 16).ok()
     }
 
+    fn busy_event_names(events_dir: PathBuf) -> Vec<String> {
+        let mut names = fs::read_dir(events_dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with("-busy") && !name.ends_with(".unit"))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn read_event_config(pmu_root: &Path, name: &str) -> Option<u64> {
+        let raw = read_trimmed(pmu_root.join("events").join(name))?;
+        let config = raw
+            .strip_prefix("config=0x")
+            .or_else(|| raw.strip_prefix("config="))?;
+        u64::from_str_radix(config.trim_start_matches("0x"), 16).ok()
+    }
+
+    fn parse_first_cpu(mask: &str) -> Option<i32> {
+        let token = mask.split(',').next()?.split('-').next()?;
+        token.parse::<i32>().ok()
+    }
+
+    fn open_counter(
+        perf_type: u32,
+        cpu: i32,
+        name: &str,
+        config: u64,
+    ) -> Result<PmuCounter, std::io::Error> {
+        let attr = PerfEventAttr {
+            type_: perf_type,
+            size: size_of::<PerfEventAttr>() as u32,
+            config,
+            sample_period_or_freq: 0,
+            sample_type: 0,
+            read_format: 0,
+            flags: 0,
+            wakeup_events_or_watermark: 0,
+            bp_type: 0,
+            bp_addr_or_config1: 0,
+            bp_len_or_config2: 0,
+            branch_sample_type: 0,
+            sample_regs_user: 0,
+            sample_stack_user: 0,
+            clockid: 0,
+            sample_regs_intr: 0,
+            aux_watermark: 0,
+            sample_max_stack: 0,
+            reserved_2: 0,
+            aux_sample_size: 0,
+            reserved_3: 0,
+            sig_data: 0,
+        };
+
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_perf_event_open,
+                &attr as *const PerfEventAttr,
+                -1,
+                cpu,
+                -1,
+                0,
+            ) as RawFd
+        };
+
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(PmuCounter {
+            name: name.to_string(),
+            fd,
+        })
+    }
+
+    fn read_counter(counter: &PmuCounter) -> Result<u64, std::io::Error> {
+        let mut value = 0_u64;
+        let read_size = unsafe {
+            libc::read(
+                counter.fd,
+                &mut value as *mut u64 as *mut libc::c_void,
+                size_of::<u64>(),
+            )
+        };
+
+        if read_size != size_of::<u64>() as isize {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(value)
+    }
+
     fn percent(value: u64, total: u64) -> f64 {
         if total == 0 {
             0.0
         } else {
             (value as f64 / total as f64) * 100.0
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{busy_event_names, parse_first_cpu};
+        use std::fs;
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        #[test]
+        fn parses_first_cpu_from_cpumask() {
+            assert_eq!(parse_first_cpu("0"), Some(0));
+            assert_eq!(parse_first_cpu("2-5"), Some(2));
+            assert_eq!(parse_first_cpu("4,8-11"), Some(4));
+        }
+
+        #[test]
+        fn discovers_only_busy_events() {
+            let mut dir = std::env::temp_dir();
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            dir.push(format!("ha-system-ronitor-busy-events-{unique}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("rcs0-busy"), "config=0x0\n").unwrap();
+            fs::write(dir.join("vcs0-busy.unit"), "ns\n").unwrap();
+            fs::write(dir.join("rc6-residency"), "config=0x1\n").unwrap();
+            fs::write(dir.join("interrupts"), "config=0x2\n").unwrap();
+
+            let names = busy_event_names(PathBuf::from(&dir));
+            assert_eq!(names, vec!["rcs0-busy".to_string()]);
+
+            fs::remove_dir_all(dir).unwrap();
         }
     }
 }
