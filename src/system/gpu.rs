@@ -45,6 +45,10 @@ mod nvml_native {
                 timestamp: Utc::now().to_rfc3339(),
                 gpu_name: self.device_name.clone(),
                 gpu_usage: utilization.gpu as f32,
+                igpu_render_usage: None,
+                igpu_blitter_usage: None,
+                igpu_video_usage: None,
+                igpu_video_enhance_usage: None,
                 gpu_temperature: temperature.map(|value| value as f32),
                 gpu_memory_available: memory_available,
                 gpu_memory_used: memory_used,
@@ -166,15 +170,33 @@ mod linux_native {
         },
     }
 
+    #[derive(Debug, Default)]
+    struct GpuUsageSample {
+        total: f32,
+        igpu_render_usage: Option<f32>,
+        igpu_blitter_usage: Option<f32>,
+        igpu_video_usage: Option<f32>,
+        igpu_video_enhance_usage: Option<f32>,
+    }
+
     #[derive(Debug)]
     struct I915PmuUsageReader {
         counters: Vec<PmuCounter>,
         last_sample: Option<PmuSnapshot>,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum I915EngineClass {
+        Render,
+        Blitter,
+        Video,
+        VideoEnhance,
+    }
+
     #[derive(Debug)]
     struct PmuCounter {
         name: String,
+        engine_class: Option<I915EngineClass>,
         fd: RawFd,
     }
 
@@ -314,7 +336,7 @@ mod linux_native {
                 .usage_source
                 .as_mut()
                 .and_then(UsageSource::read)
-                .unwrap_or(0.0);
+                .unwrap_or_default();
 
             let (gpu_memory_total, gpu_memory_used) = self
                 .memory_source
@@ -326,7 +348,11 @@ mod linux_native {
             Some(GpuState {
                 timestamp: Utc::now().to_rfc3339(),
                 gpu_name: self.gpu_name.clone(),
-                gpu_usage,
+                gpu_usage: gpu_usage.total,
+                igpu_render_usage: gpu_usage.igpu_render_usage,
+                igpu_blitter_usage: gpu_usage.igpu_blitter_usage,
+                igpu_video_usage: gpu_usage.igpu_video_usage,
+                igpu_video_enhance_usage: gpu_usage.igpu_video_enhance_usage,
                 gpu_temperature: None,
                 gpu_memory_available: gpu_memory_total.saturating_sub(gpu_memory_used),
                 gpu_memory_used,
@@ -337,9 +363,11 @@ mod linux_native {
     }
 
     impl UsageSource {
-        fn read(&mut self) -> Option<f32> {
+        fn read(&mut self) -> Option<GpuUsageSample> {
             match self {
-                Self::BusyPercent(path) => read_trimmed(path)?.parse::<f32>().ok(),
+                Self::BusyPercent(path) => Some(GpuUsageSample::with_total(
+                    read_trimmed(path)?.parse::<f32>().ok()?,
+                )),
                 Self::I915Pmu(reader) => reader.read(),
                 Self::IntelFrequency {
                     current_path,
@@ -348,11 +376,39 @@ mod linux_native {
                     let current = read_trimmed(current_path)?.parse::<f32>().ok()?;
                     let max = read_trimmed(max_path)?.parse::<f32>().ok()?;
                     if max <= 0.0 {
-                        return Some(0.0);
+                        return Some(GpuUsageSample::default());
                     }
 
-                    Some(((current / max) * 100.0).clamp(0.0, 100.0))
+                    Some(GpuUsageSample::with_total(
+                        ((current / max) * 100.0).clamp(0.0, 100.0),
+                    ))
                 }
+            }
+        }
+    }
+
+    impl GpuUsageSample {
+        fn with_total(total: f32) -> Self {
+            Self {
+                total,
+                ..Self::default()
+            }
+        }
+
+        fn update_total_from_parts(&mut self, fallback: f32) {
+            // i915 PMU reports per-engine busy time. Summing concurrent engines
+            // overstates a single "GPU usage", so keep the busiest engine class.
+            self.total = fallback;
+            for value in [
+                self.igpu_render_usage,
+                self.igpu_blitter_usage,
+                self.igpu_video_usage,
+                self.igpu_video_enhance_usage,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.total = self.total.max(value);
             }
         }
     }
@@ -389,7 +445,7 @@ mod linux_native {
             })
         }
 
-        fn read(&mut self) -> Option<f32> {
+        fn read(&mut self) -> Option<GpuUsageSample> {
             let snapshot = self.snapshot()?;
             let previous = self.last_sample.replace(snapshot)?;
             let current = self.last_sample.as_ref()?;
@@ -398,17 +454,42 @@ mod linux_native {
                 .duration_since(previous.captured_at)
                 .as_nanos() as f64;
             if elapsed_ns <= 0.0 {
-                return Some(0.0);
+                return Some(GpuUsageSample::default());
             }
 
-            let busy_ns = previous
+            let deltas = previous
                 .values
                 .iter()
                 .zip(&current.values)
                 .map(|(before, after)| after.saturating_sub(*before))
-                .sum::<u64>() as f64;
+                .collect::<Vec<_>>();
 
-            Some(((busy_ns / elapsed_ns) * 100.0).clamp(0.0, 100.0) as f32)
+            let mut usage = GpuUsageSample::default();
+            let mut fallback_total = 0.0_f32;
+
+            for (counter, delta_ns) in self.counters.iter().zip(deltas) {
+                let engine_usage = percent_from_busy_ns(delta_ns, elapsed_ns);
+                fallback_total = fallback_total.max(engine_usage);
+
+                match counter.engine_class {
+                    Some(I915EngineClass::Render) => {
+                        accumulate_usage(&mut usage.igpu_render_usage, engine_usage);
+                    }
+                    Some(I915EngineClass::Blitter) => {
+                        accumulate_usage(&mut usage.igpu_blitter_usage, engine_usage);
+                    }
+                    Some(I915EngineClass::Video) => {
+                        accumulate_usage(&mut usage.igpu_video_usage, engine_usage);
+                    }
+                    Some(I915EngineClass::VideoEnhance) => {
+                        accumulate_usage(&mut usage.igpu_video_enhance_usage, engine_usage);
+                    }
+                    None => {}
+                }
+            }
+
+            usage.update_total_from_parts(fallback_total);
+            Some(usage)
         }
 
         fn snapshot(&self) -> Option<PmuSnapshot> {
@@ -549,6 +630,20 @@ mod linux_native {
         token.parse::<i32>().ok()
     }
 
+    fn i915_engine_class(name: &str) -> Option<I915EngineClass> {
+        if name.starts_with("rcs") {
+            Some(I915EngineClass::Render)
+        } else if name.starts_with("bcs") {
+            Some(I915EngineClass::Blitter)
+        } else if name.starts_with("vcs") {
+            Some(I915EngineClass::Video)
+        } else if name.starts_with("vecs") {
+            Some(I915EngineClass::VideoEnhance)
+        } else {
+            None
+        }
+    }
+
     fn open_counter(
         perf_type: u32,
         cpu: i32,
@@ -597,6 +692,7 @@ mod linux_native {
 
         Ok(PmuCounter {
             name: name.to_string(),
+            engine_class: i915_engine_class(name),
             fd,
         })
     }
@@ -626,9 +722,20 @@ mod linux_native {
         }
     }
 
+    fn percent_from_busy_ns(busy_ns: u64, elapsed_ns: f64) -> f32 {
+        ((busy_ns as f64 / elapsed_ns) * 100.0).clamp(0.0, 100.0) as f32
+    }
+
+    fn accumulate_usage(slot: &mut Option<f32>, value: f32) {
+        let next = slot.unwrap_or(0.0) + value;
+        *slot = Some(next.clamp(0.0, 100.0));
+    }
+
     #[cfg(test)]
     mod tests {
-        use super::{busy_event_names, parse_first_cpu};
+        use super::{
+            GpuUsageSample, I915EngineClass, busy_event_names, i915_engine_class, parse_first_cpu,
+        };
         use std::fs;
         use std::path::PathBuf;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -638,6 +745,42 @@ mod linux_native {
             assert_eq!(parse_first_cpu("0"), Some(0));
             assert_eq!(parse_first_cpu("2-5"), Some(2));
             assert_eq!(parse_first_cpu("4,8-11"), Some(4));
+        }
+
+        #[test]
+        fn classifies_i915_busy_engines() {
+            assert!(matches!(
+                i915_engine_class("rcs0-busy"),
+                Some(I915EngineClass::Render)
+            ));
+            assert!(matches!(
+                i915_engine_class("bcs0-busy"),
+                Some(I915EngineClass::Blitter)
+            ));
+            assert!(matches!(
+                i915_engine_class("vcs0-busy"),
+                Some(I915EngineClass::Video)
+            ));
+            assert!(matches!(
+                i915_engine_class("vecs0-busy"),
+                Some(I915EngineClass::VideoEnhance)
+            ));
+            assert!(i915_engine_class("ccs0-busy").is_none());
+        }
+
+        #[test]
+        fn overall_usage_uses_busiest_engine_class() {
+            let mut usage = GpuUsageSample {
+                total: 0.0,
+                igpu_render_usage: Some(56.83),
+                igpu_blitter_usage: Some(0.0),
+                igpu_video_usage: Some(86.10),
+                igpu_video_enhance_usage: Some(0.0),
+            };
+
+            usage.update_total_from_parts(0.0);
+
+            assert_eq!(usage.total, 86.10);
         }
 
         #[test]

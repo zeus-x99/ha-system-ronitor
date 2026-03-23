@@ -19,6 +19,14 @@ pub struct GpuState {
     pub gpu_name: String,
     pub gpu_usage: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub igpu_render_usage: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub igpu_blitter_usage: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub igpu_video_usage: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub igpu_video_enhance_usage: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_temperature: Option<f32>,
     pub gpu_memory_available: u64,
     pub gpu_memory_used: u64,
@@ -90,6 +98,26 @@ impl GpuState {
                 >= Some(GPU_TEMPERATURE_CHANGE_THRESHOLD_C)
             || self.gpu_memory_total != previous.gpu_memory_total
             || (self.gpu_usage - previous.gpu_usage).abs() >= usage_threshold_pct
+            || option_abs_diff_exceeds(
+                self.igpu_render_usage,
+                previous.igpu_render_usage,
+                usage_threshold_pct,
+            )
+            || option_abs_diff_exceeds(
+                self.igpu_blitter_usage,
+                previous.igpu_blitter_usage,
+                usage_threshold_pct,
+            )
+            || option_abs_diff_exceeds(
+                self.igpu_video_usage,
+                previous.igpu_video_usage,
+                usage_threshold_pct,
+            )
+            || option_abs_diff_exceeds(
+                self.igpu_video_enhance_usage,
+                previous.igpu_video_enhance_usage,
+                usage_threshold_pct,
+            )
             || abs_diff_u64(self.gpu_memory_used, previous.gpu_memory_used)
                 >= memory_threshold_bytes
     }
@@ -130,6 +158,10 @@ fn option_abs_diff_f32(left: Option<f32>, right: Option<f32>) -> Option<f32> {
         (None, None) => None,
         _ => Some(f32::MAX),
     }
+}
+
+fn option_abs_diff_exceeds(left: Option<f32>, right: Option<f32>, threshold: f32) -> bool {
+    option_abs_diff_f32(left, right).is_some_and(|diff| diff >= threshold)
 }
 
 const CPU_TEMPERATURE_CHANGE_THRESHOLD_C: f32 = 1.0;

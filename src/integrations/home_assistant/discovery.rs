@@ -396,6 +396,74 @@ fn build_components(
             .with_icon("mdi:expansion-card"),
         );
 
+        if gpu_state.igpu_render_usage.is_some() {
+            components.insert(
+                "igpu_render_usage".to_string(),
+                Component::sensor(
+                    identity,
+                    "igpu_render_usage",
+                    "iGPU Render Usage",
+                    topics.gpu_state.clone(),
+                    "{{ value_json.igpu_render_usage }}",
+                )
+                .with_unit("%")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:expansion-card"),
+            );
+        }
+
+        if gpu_state.igpu_blitter_usage.is_some() {
+            components.insert(
+                "igpu_blitter_usage".to_string(),
+                Component::sensor(
+                    identity,
+                    "igpu_blitter_usage",
+                    "iGPU Blitter Usage",
+                    topics.gpu_state.clone(),
+                    "{{ value_json.igpu_blitter_usage }}",
+                )
+                .with_unit("%")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:expansion-card"),
+            );
+        }
+
+        if gpu_state.igpu_video_usage.is_some() {
+            components.insert(
+                "igpu_video_usage".to_string(),
+                Component::sensor(
+                    identity,
+                    "igpu_video_usage",
+                    "iGPU Video Usage",
+                    topics.gpu_state.clone(),
+                    "{{ value_json.igpu_video_usage }}",
+                )
+                .with_unit("%")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:expansion-card"),
+            );
+        }
+
+        if gpu_state.igpu_video_enhance_usage.is_some() {
+            components.insert(
+                "igpu_video_enhance_usage".to_string(),
+                Component::sensor(
+                    identity,
+                    "igpu_video_enhance_usage",
+                    "iGPU Video Enhance Usage",
+                    topics.gpu_state.clone(),
+                    "{{ value_json.igpu_video_enhance_usage }}",
+                )
+                .with_unit("%")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:expansion-card"),
+            );
+        }
+
         if gpu_state.gpu_temperature.is_some() {
             components.insert(
                 "gpu_temperature".to_string(),
