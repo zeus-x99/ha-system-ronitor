@@ -96,16 +96,9 @@ mod nvml_native {
 use nvml_native::NvidiaGpuReader;
 
 #[cfg(target_os = "windows")]
-use std::time::Instant;
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-const GPU_BACKEND_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-#[cfg(target_os = "windows")]
 #[derive(Debug)]
 pub struct GpuReader {
     nvml_reader: Option<NvidiaGpuReader>,
-    last_probe_at: Option<Instant>,
 }
 
 #[cfg(target_os = "windows")]
@@ -120,21 +113,16 @@ impl GpuReader {
     pub fn new() -> Self {
         Self {
             nvml_reader: NvidiaGpuReader::new(),
-            last_probe_at: Some(Instant::now()),
         }
     }
 
     pub fn read(&mut self) -> Option<crate::system::models::GpuState> {
         self.ensure_nvml_reader();
         let state = self.nvml_reader.as_ref().and_then(NvidiaGpuReader::read);
-        if state.is_some() || self.nvml_reader.is_none() {
-            return state;
+        if state.is_none() {
+            self.nvml_reader = None;
         }
-
-        self.nvml_reader = None;
-        self.last_probe_at = None;
-        self.ensure_nvml_reader();
-        self.nvml_reader.as_ref().and_then(NvidiaGpuReader::read)
+        state
     }
 
     fn ensure_nvml_reader(&mut self) {
@@ -142,14 +130,6 @@ impl GpuReader {
             return;
         }
 
-        let should_probe = self
-            .last_probe_at
-            .is_none_or(|instant| instant.elapsed() >= GPU_BACKEND_RETRY_INTERVAL);
-        if !should_probe {
-            return;
-        }
-
-        self.last_probe_at = Some(Instant::now());
         self.nvml_reader = NvidiaGpuReader::new();
     }
 }
@@ -165,7 +145,7 @@ mod linux_native {
     use chrono::Utc;
     use tracing::debug;
 
-    use crate::system::gpu::{GPU_BACKEND_RETRY_INTERVAL, NvidiaGpuReader};
+    use crate::system::gpu::NvidiaGpuReader;
     use crate::system::models::GpuState;
 
     const DRM_CLASS_DISPLAY_VGA: u64 = 0x030000;
@@ -174,7 +154,6 @@ mod linux_native {
     #[derive(Debug)]
     pub struct GpuReader {
         backend: Option<GpuBackend>,
-        last_probe_at: Option<Instant>,
     }
 
     #[derive(Debug)]
@@ -279,26 +258,21 @@ mod linux_native {
         pub fn new() -> Self {
             Self {
                 backend: probe_backend(),
-                last_probe_at: Some(Instant::now()),
             }
         }
 
         pub fn read(&mut self) -> Option<GpuState> {
             self.ensure_backend();
             let state = self.backend.as_mut().and_then(GpuBackend::read);
-            if state.is_some()
-                || !self
+            if state.is_none()
+                && self
                     .backend
                     .as_ref()
                     .is_some_and(GpuBackend::should_reprobe_after_read_failure)
             {
-                return state;
+                self.backend = None;
             }
-
-            self.backend = None;
-            self.last_probe_at = None;
-            self.ensure_backend();
-            self.backend.as_mut().and_then(GpuBackend::read)
+            state
         }
 
         fn ensure_backend(&mut self) {
@@ -306,14 +280,6 @@ mod linux_native {
                 return;
             }
 
-            let should_probe = self
-                .last_probe_at
-                .is_none_or(|instant| instant.elapsed() >= GPU_BACKEND_RETRY_INTERVAL);
-            if !should_probe {
-                return;
-            }
-
-            self.last_probe_at = Some(Instant::now());
             self.backend = probe_backend();
         }
     }
