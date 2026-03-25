@@ -285,6 +285,7 @@ PY
         ExecStart = execStart;
         User = cfg.user;
         Group = cfg.group;
+        PermissionsStartOnly = cfg.mqttPasswordFile != null;
         AmbientCapabilities = [ "CAP_PERFMON" ];
         CapabilityBoundingSet = [ "CAP_PERFMON" ];
         Restart = "always";
