@@ -165,7 +165,7 @@ mod linux_native {
     use chrono::Utc;
     use tracing::debug;
 
-    use crate::system::gpu::NvidiaGpuReader;
+    use crate::system::gpu::{GPU_BACKEND_RETRY_INTERVAL, NvidiaGpuReader};
     use crate::system::models::GpuState;
 
     const DRM_CLASS_DISPLAY_VGA: u64 = 0x030000;
