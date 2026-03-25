@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
 use chrono::Utc;
 use sysinfo::{Components, CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 use crate::device::Identity;
 use crate::shared::util::disk_component_id;
 use crate::system::gpu::GpuReader;
-use crate::system::models::{CpuState, DiskPayload, DiskState, GpuState, MemoryState};
+use crate::system::models::{CpuState, DiskPayload, DiskState, GpuState, MemoryState, UptimeState};
 use crate::system::runtime::{CpuTemperatureReader, detect_gpu_temp_from_components};
 
 const RUNTIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -44,7 +43,7 @@ impl Collector {
         let disks = Disks::new_with_refreshed_list();
         let components = Components::new_with_refreshed_list();
         let mut cpu_temperature_reader = CpuTemperatureReader::new();
-        let gpu_reader = GpuReader::new();
+        let mut gpu_reader = GpuReader::new();
         let cpu_model = cpu_usage_system
             .cpus()
             .first()
@@ -53,6 +52,9 @@ impl Collector {
             .unwrap_or_else(|| "Unknown CPU".to_string());
         let cpu_package_temp = cpu_temperature_reader.read(&components);
         let gpu_temperature = detect_gpu_temp_from_components(&components);
+
+        // Pre-warm the GPU reader so the first publish can include data when possible.
+        let _ = gpu_reader.read();
 
         Self {
             system,
@@ -73,15 +75,18 @@ impl Collector {
         self.cpu_usage_system.refresh_cpu_usage();
         self.refresh_runtime_snapshot_if_needed(false);
 
-        let timestamp = Utc::now().to_rfc3339();
-        let cpu_usage = self.cpu_usage_system.global_cpu_usage();
-
         CpuState {
-            timestamp,
-            cpu_usage,
+            timestamp: Utc::now().to_rfc3339(),
+            cpu_usage: self.cpu_usage_system.global_cpu_usage(),
             cpu_package_temp: self.cpu_package_temp,
             cpu_model: self.cpu_model.clone(),
             os_version: self.os_version.clone(),
+        }
+    }
+
+    pub fn sample_uptime(&self) -> UptimeState {
+        UptimeState {
+            timestamp: Utc::now().to_rfc3339(),
             uptime: System::uptime(),
         }
     }
@@ -147,13 +152,22 @@ impl Collector {
         }
     }
 
-    pub fn sample_all(&mut self) -> Result<(CpuState, Option<GpuState>, MemoryState, DiskState)> {
-        Ok((
+    pub fn sample_all(
+        &mut self,
+    ) -> (
+        CpuState,
+        UptimeState,
+        Option<GpuState>,
+        MemoryState,
+        DiskState,
+    ) {
+        (
             self.sample_cpu(),
+            self.sample_uptime(),
             self.sample_gpu(),
             self.sample_memory(),
             self.sample_disks(),
-        ))
+        )
     }
 
     fn refresh_runtime_snapshot_if_needed(&mut self, force: bool) {

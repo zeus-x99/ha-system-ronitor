@@ -1,52 +1,17 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::json;
 
 use crate::config::Config;
 use crate::device::{Identity, Topics};
 use crate::system::models::{DiskState, GpuState};
 
 const CELSIUS_UNIT: &str = "\u{00B0}C";
-const LEGACY_SENSOR_COMPONENT_IDS: &[&str] = &[
-    "cpu_usage",
-    "cpu_package_temp",
-    "cpu_model",
-    "os_version",
-    "cpu_cores",
-    "cpu_threads",
-    "uptime",
-    "process_count",
-    "gpu_name",
-    "gpu_usage",
-    "gpu_temperature",
-    "gpu_memory_available",
-    "gpu_memory_used",
-    "gpu_memory_total",
-    "gpu_memory_usage",
-    "memory_used",
-    "memory_total",
-    "memory_usage",
-    "swap_used",
-    "swap_total",
-    "swap_usage",
-];
-const LEGACY_BUTTON_COMPONENT_IDS: &[&str] = &["shutdown_host"];
-const REMOVED_DEVICE_SENSOR_COMPONENT_IDS: &[&str] = &[
-    "cpu_cores",
-    "cpu_threads",
-    "process_count",
-    "swap_used",
-    "swap_total",
-    "swap_usage",
-    "gpu_memory_free",
-];
 
 #[derive(Debug, Clone)]
 pub struct DeviceDiscoveryMessage {
     pub topic: String,
     pub payload: DeviceDiscoveryPayload,
-    pub legacy_topics: BTreeMap<String, String>,
 }
 
 impl DeviceDiscoveryMessage {
@@ -206,7 +171,6 @@ pub fn build_device_discovery_message(
     disks: &DiskState,
 ) -> DeviceDiscoveryMessage {
     let components = build_components(config, identity, topics, gpu_state, disks);
-    let legacy_topics = build_legacy_topics(topics, disks);
 
     let payload = DeviceDiscoveryPayload {
         device: DeviceInfo {
@@ -233,60 +197,7 @@ pub fn build_device_discovery_message(
     DeviceDiscoveryMessage {
         topic: topics.device_discovery.clone(),
         payload,
-        legacy_topics,
     }
-}
-
-pub fn build_removed_device_components_cleanup_payload(
-    config: &Config,
-    identity: &Identity,
-    topics: &Topics,
-    gpu_state: Option<&GpuState>,
-    disks: &DiskState,
-) -> Option<Vec<u8>> {
-    if REMOVED_DEVICE_SENSOR_COMPONENT_IDS.is_empty() {
-        return None;
-    }
-
-    let message = build_device_discovery_message(config, identity, topics, gpu_state, disks);
-    let mut payload = serde_json::to_value(&message.payload).ok()?;
-    let components = payload.get_mut("cmps")?.as_object_mut()?;
-
-    for component_id in REMOVED_DEVICE_SENSOR_COMPONENT_IDS {
-        components.insert((*component_id).to_string(), json!({ "p": "sensor" }));
-    }
-
-    serde_json::to_vec(&payload).ok()
-}
-
-fn build_legacy_topics(topics: &Topics, disks: &DiskState) -> BTreeMap<String, String> {
-    let mut legacy_topics = BTreeMap::new();
-
-    for component_id in LEGACY_SENSOR_COMPONENT_IDS {
-        legacy_topics.insert(
-            (*component_id).to_string(),
-            topics.legacy_component_discovery("sensor", component_id),
-        );
-    }
-
-    for component_id in LEGACY_BUTTON_COMPONENT_IDS {
-        legacy_topics.insert(
-            (*component_id).to_string(),
-            topics.legacy_component_discovery("button", component_id),
-        );
-    }
-
-    for disk_id in disks.disks.keys() {
-        for suffix in ["used", "available", "total", "usage"] {
-            let component_id = format!("disk_{disk_id}_{suffix}");
-            legacy_topics.insert(
-                component_id.clone(),
-                topics.legacy_component_discovery("sensor", &component_id),
-            );
-        }
-    }
-
-    legacy_topics
 }
 
 fn build_components(
@@ -359,7 +270,7 @@ fn build_components(
             identity,
             "uptime",
             "Uptime",
-            topics.cpu_state.clone(),
+            topics.uptime_state.clone(),
             "{{ value_json.uptime }}",
         )
         .with_unit("s")

@@ -3,7 +3,7 @@ use anyhow::Result;
 fn main() -> Result<()> {
     #[cfg(windows)]
     {
-        return ha_system_ronitor::windows_service_host::run();
+        ha_system_ronitor::windows_service_host::run()
     }
 
     #[cfg(not(windows))]

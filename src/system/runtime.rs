@@ -1,12 +1,20 @@
+#[cfg(target_os = "windows")]
+use std::time::{Duration, Instant};
+
 use sysinfo::{Component, Components};
 
 #[cfg(target_os = "windows")]
 use crate::system::pawnio::PawnIoCpuTemperatureReader;
 
+#[cfg(target_os = "windows")]
+const PAWNIO_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct CpuTemperatureReader {
     #[cfg(target_os = "windows")]
     pawnio_reader: Option<PawnIoCpuTemperatureReader>,
+    #[cfg(target_os = "windows")]
+    last_pawnio_probe_at: Option<Instant>,
 }
 
 impl Default for CpuTemperatureReader {
@@ -20,6 +28,8 @@ impl CpuTemperatureReader {
         Self {
             #[cfg(target_os = "windows")]
             pawnio_reader: PawnIoCpuTemperatureReader::new(),
+            #[cfg(target_os = "windows")]
+            last_pawnio_probe_at: Some(Instant::now()),
         }
     }
 
@@ -34,9 +44,43 @@ impl CpuTemperatureReader {
 
     #[cfg(target_os = "windows")]
     fn read_platform_specific_temperature(&mut self, _components: &Components) -> Option<f32> {
-        self.pawnio_reader
-            .as_mut()
-            .and_then(PawnIoCpuTemperatureReader::read)
+        self.ensure_pawnio_reader();
+        let mut recreate_reader = false;
+        let temperature = if let Some(reader) = self.pawnio_reader.as_mut() {
+            let value = reader.read();
+            recreate_reader = value.is_none() && reader.should_recreate_after_failure();
+            value
+        } else {
+            None
+        };
+
+        if recreate_reader {
+            self.pawnio_reader = None;
+            self.last_pawnio_probe_at = None;
+        }
+
+        if temperature.is_none() {
+            self.ensure_pawnio_reader();
+        }
+
+        temperature
+    }
+
+    #[cfg(target_os = "windows")]
+    fn ensure_pawnio_reader(&mut self) {
+        if self.pawnio_reader.is_some() {
+            return;
+        }
+
+        let should_probe = self
+            .last_pawnio_probe_at
+            .is_none_or(|instant| instant.elapsed() >= PAWNIO_RETRY_INTERVAL);
+        if !should_probe {
+            return;
+        }
+
+        self.last_pawnio_probe_at = Some(Instant::now());
+        self.pawnio_reader = PawnIoCpuTemperatureReader::new();
     }
 }
 

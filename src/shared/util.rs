@@ -1,3 +1,5 @@
+use std::fs;
+use std::io;
 use std::path::Path;
 
 pub fn disk_component_id(mount_point: &str, fallback_name: &str) -> String {
@@ -37,4 +39,26 @@ pub fn slugify(value: &str) -> String {
     }
 
     slug.trim_matches('_').to_string()
+}
+
+pub fn files_match(source: &Path, destination: &Path) -> io::Result<bool> {
+    let source_metadata = fs::metadata(source)?;
+    let destination_metadata = match fs::metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+
+    if source_metadata.len() != destination_metadata.len() {
+        return Ok(false);
+    }
+
+    Ok(fs::read(source)? == fs::read(destination)?)
+}
+
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }

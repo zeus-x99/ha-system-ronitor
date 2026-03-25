@@ -5,8 +5,7 @@ mod app {
     use std::thread;
     use std::time::Duration;
 
-    use anyhow::{Result, bail};
-    use clap::Parser;
+    use anyhow::{Result, anyhow, bail};
     use ha_system_ronitor::system::pawnio::PawnIoCpuTemperatureReader;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Security::{
@@ -17,22 +16,14 @@ mod app {
     const AMDFAMILY17_MODULE_NAME: &str = "AMDFamily17.bin";
     const PAWNIO_DLL_NAME: &str = "PawnIOLib.dll";
 
-    #[derive(Debug, Parser)]
-    #[command(about = "Probe CPU package temperature through PawnIO")]
+    #[derive(Debug, Clone, Copy)]
     struct Args {
-        #[arg(long, default_value_t = 1)]
         count: u64,
-
-        #[arg(
-            long,
-            default_value_t = 1000,
-            value_parser = clap::value_parser!(u64).range(1..)
-        )]
         interval_ms: u64,
     }
 
     pub fn run() -> Result<()> {
-        let args = Args::parse();
+        let args = parse_args()?;
 
         println!("windows_pawnio_temp_probe");
         println!("module_path: {}", display_path(resolve_module_path()));
@@ -83,6 +74,45 @@ mod app {
         }
 
         Ok(())
+    }
+
+    fn parse_args() -> Result<Args> {
+        let mut count = 1_u64;
+        let mut interval_ms = 1_000_u64;
+        let mut args = env::args().skip(1);
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--count" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("missing value for `--count`"))?;
+                    count = value
+                        .parse::<u64>()
+                        .map_err(|_| anyhow!("invalid `--count` value `{value}`"))?;
+                }
+                "--interval-ms" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("missing value for `--interval-ms`"))?;
+                    interval_ms = value
+                        .parse::<u64>()
+                        .map_err(|_| anyhow!("invalid `--interval-ms` value `{value}`"))?;
+                    if interval_ms == 0 {
+                        bail!("`--interval-ms` must be greater than 0");
+                    }
+                }
+                "--help" | "-h" => {
+                    println!(
+                        "Usage: cargo run --example windows_pawnio_temp_probe -- [--count <N>] [--interval-ms <N>]"
+                    );
+                    std::process::exit(0);
+                }
+                other => bail!("unknown argument `{other}`"),
+            }
+        }
+
+        Ok(Args { count, interval_ms })
     }
 
     fn display_path(path: Option<PathBuf>) -> String {

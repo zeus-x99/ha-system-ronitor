@@ -10,6 +10,11 @@ pub struct CpuState {
     pub cpu_package_temp: Option<f32>,
     pub cpu_model: String,
     pub os_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UptimeState {
+    pub timestamp: String,
     pub uptime: u64,
 }
 
@@ -68,6 +73,12 @@ impl CpuState {
         }
 
         false
+    }
+}
+
+impl UptimeState {
+    pub fn changed_from(&self, previous: &Self) -> bool {
+        self.uptime != previous.uptime
     }
 }
 

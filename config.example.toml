@@ -1,15 +1,19 @@
-# 本地运行时，请将此文件复制为 `config.toml`。
-# 如果是已安装的 Windows 服务，请将此文件放到
-# `C:\ProgramData\ha-system-ronitor\config\config.toml`。
+# 本地运行时，请先将此文件复制为 `config.toml`。
+# 如果已经安装为 Windows 服务，请将配置文件放到：
+# `C:\ProgramData\ha-system-ronitor\config\config.toml`
+#
+# 说明：
+# 1. `config.toml` 是本程序唯一的业务配置来源。
+# 2. `--config-dir` / `--log-dir` 只用于指定配置目录和日志目录，不用于覆盖下面这些业务字段。
 
 [mqtt]
 # MQTT 服务器主机名或 IP 地址。
 host = "10.0.0.1"
-# MQTT 服务器 TCP 端口。
+# MQTT 服务器端口。
 port = 1883
-# 监控程序连接 MQTT 时使用的用户名。
+# MQTT 用户名；如果你的 Broker 允许匿名访问，可以留空或删除。
 username = "homeassistant"
-# 监控程序连接 MQTT 时使用的密码。
+# MQTT 密码；如果你的 Broker 允许匿名访问，可以留空或删除。
 password = "change-me"
 
 [home_assistant]
@@ -17,59 +21,55 @@ password = "change-me"
 discovery_prefix = "homeassistant"
 # Home Assistant 的 birth/status 主题。
 status_topic = "homeassistant/status"
-# 监控数据状态主题与可用性主题的基础前缀。
+# 本程序发布状态与可用性的 MQTT 主题前缀。
 topic_prefix = "monitor/system"
 
 [device]
-# 可选的稳定设备 node_id。
+# 可选：手动指定稳定的 node_id。
 # 不填写时，程序会根据主机名自动生成。
 # node_id = "my-host"
-# 可选的设备显示名称，会显示在 Home Assistant 中。
+
+# 可选：Home Assistant 中显示的设备名称。
 # 不填写时，程序会使用“<主机名> System Monitor”。
 # name = "My Host System Monitor"
 
 [sampling.cpu]
-# CPU 采样与发布间隔，单位为秒。
+# CPU 采样与发布间隔，单位：秒。
 interval_secs = 1
-# 用于平滑 CPU 使用率的滑动平均窗口大小。
-smoothing_window = 5
-# 即使变化很小，超过这个秒数后也会强制发布一次 CPU 状态。
-max_silence_secs = 30
 
 [sampling.gpu]
-# GPU 采样与发布间隔，单位为秒。
+# GPU 采样与发布间隔，单位：秒。
 interval_secs = 1
-# 即使变化很小，超过这个秒数后也会强制发布一次 GPU 状态。
-max_silence_secs = 30
 
 [sampling.memory]
-# 内存采样与发布间隔，单位为秒。
+# 内存采样与发布间隔，单位：秒。
 interval_secs = 5
-# 即使变化很小，超过这个秒数后也会强制发布一次内存状态。
-max_silence_secs = 120
+
+[sampling.uptime]
+# 系统运行时间发布间隔，单位：秒。
+# 默认 300 秒，也就是 5 分钟更新一次。
+interval_secs = 300
 
 [sampling.disk]
-# 磁盘采样与发布间隔，单位为秒。
+# 磁盘采样与发布间隔，单位：秒。
 interval_secs = 30
-# 即使变化很小，超过这个秒数后也会强制发布一次磁盘状态。
-max_silence_secs = 900
 
 [thresholds.cpu]
-# CPU 使用率变化达到这个百分比后，才会发布新值。
+# CPU 使用率变化达到这个百分比后，才发布新值。
 usage_pct = 1.0
 
 [thresholds.gpu]
-# GPU 使用率变化达到这个百分比后，才会发布新值。
+# GPU 使用率变化达到这个百分比后，才发布新值。
 usage_pct = 1.0
-# GPU 显存变化达到这个 MiB 数后，才会发布新值。
+# GPU 显存变化达到这个 MiB 数后，才发布新值。
 memory_change_mib = 8
 
 [thresholds.memory]
-# 内存变化达到这个 MiB 数后，才会发布新值。
+# 内存变化达到这个 MiB 数后，才发布新值。
 change_mib = 8
 
 [thresholds.disk]
-# 磁盘使用量变化达到这个 MiB 数后，才会发布新值。
+# 磁盘已用/可用空间变化达到这个 MiB 数后，才发布新值。
 change_mib = 32
 
 [shutdown]
@@ -77,5 +77,5 @@ change_mib = 32
 enable_button = false
 # 触发关机动作时要求收到的 MQTT payload。
 payload = "shutdown"
-# 为 true 时只记录关机请求，不会真正执行关机。
+# 为 true 时只记录关机请求，不真正执行关机。
 dry_run = false

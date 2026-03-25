@@ -28,6 +28,7 @@ use crate::config::{
     BootstrapOptions, CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME,
     candidate_config_directories_with, seed_config_toml,
 };
+use crate::shared::util::{files_match, same_path};
 
 const SERVICE_NAME: &str = "ha-system-ronitor";
 const SERVICE_DISPLAY_NAME: &str = "HA System Ronitor";
@@ -40,7 +41,9 @@ const PROGRAM_FILES_FALLBACK: &str = r"C:\Program Files";
 const PROGRAM_DATA_FALLBACK: &str = r"C:\ProgramData";
 const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
-const ERROR_SERVICE_EXISTS: i32 = 1073;
+const ERROR_SHARING_VIOLATION: i32 = 32;
+const FILE_COPY_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const FILE_COPY_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ServiceStartMode {
@@ -142,8 +145,8 @@ fn run_service() -> Result<()> {
     )?;
 
     let service_result = (|| -> Result<()> {
-        let config = crate::app::parse_config_from(env::args_os())
-            .context("parsing configuration for Windows service")?;
+        let config = crate::config::load_config(&bootstrap)
+            .context("loading configuration for Windows service")?;
         let runtime = build_runtime()?;
 
         set_service_state(
@@ -321,30 +324,24 @@ fn parse_install_options(args: &[OsString]) -> Result<InstallOptions> {
 }
 
 fn install_service(options: InstallOptions) -> Result<()> {
-    let service_paths = prepare_service_layout(&options)?;
     let service_manager =
         open_service_manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
-    let service_info = desired_service_info(&service_paths, options.start_mode);
     let service_access = ServiceAccess::QUERY_STATUS
         | ServiceAccess::QUERY_CONFIG
         | ServiceAccess::CHANGE_CONFIG
         | ServiceAccess::START
         | ServiceAccess::STOP
         | ServiceAccess::DELETE;
+    let existing_service = try_open_service(&service_manager, service_access)?;
+    let restart_after_update = match existing_service.as_ref() {
+        Some(service) => stop_service_for_update(service)?,
+        None => false,
+    };
+    let service_paths = prepare_service_layout(&options)?;
+    let service_info = desired_service_info(&service_paths, options.start_mode);
 
-    let service = match service_manager.create_service(&service_info, service_access) {
-        Ok(service) => {
-            println!(
-                "Installed Windows service `{}` at `{}`.",
-                SERVICE_NAME,
-                service_paths.executable_path.display()
-            );
-            service
-        }
-        Err(error) if raw_os_error(&error) == Some(ERROR_SERVICE_EXISTS) => {
-            let service = service_manager
-                .open_service(SERVICE_NAME, service_access)
-                .context("opening existing Windows service")?;
+    let service = match existing_service {
+        Some(service) => {
             service
                 .change_config(&service_info)
                 .context("updating existing Windows service configuration")?;
@@ -355,7 +352,17 @@ fn install_service(options: InstallOptions) -> Result<()> {
             );
             service
         }
-        Err(error) => return Err(anyhow!(error).context("creating Windows service")),
+        None => {
+            let service = service_manager
+                .create_service(&service_info, service_access)
+                .context("creating Windows service")?;
+            println!(
+                "Installed Windows service `{}` at `{}`.",
+                SERVICE_NAME,
+                service_paths.executable_path.display()
+            );
+            service
+        }
     };
 
     configure_service_defaults(
@@ -378,65 +385,28 @@ fn install_service(options: InstallOptions) -> Result<()> {
     );
     println!("Config directory: {}.", service_paths.config_dir.display());
     println!("Log directory: {}.", service_paths.log_dir.display());
-    println!(
-        "Run `{} service start` to launch it now.",
-        current_exe_display()?
-    );
+
+    if restart_after_update {
+        start_service_handle(&service)?;
+        println!("Windows service `{SERVICE_NAME}` has been restarted after the update.");
+    } else {
+        println!(
+            "Run `{} service start` to launch it now.",
+            current_exe_display()?
+        );
+    }
 
     Ok(())
 }
 
 fn start_service() -> Result<()> {
     let service = open_installed_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
-    let status = service.query_status().context("querying service status")?;
-
-    match status.current_state {
-        ServiceState::Running => {
-            println!("Windows service `{SERVICE_NAME}` is already running.");
-            return Ok(());
-        }
-        ServiceState::StartPending => {
-            wait_for_state(&service, ServiceState::Running, SERVICE_STATE_TIMEOUT)?;
-            println!("Windows service `{SERVICE_NAME}` is running.");
-            return Ok(());
-        }
-        ServiceState::StopPending => {
-            wait_for_state(&service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
-        }
-        _ => {}
-    }
-
-    service
-        .start::<OsString>(&[])
-        .context("starting Windows service")?;
-    wait_for_state(&service, ServiceState::Running, SERVICE_STATE_TIMEOUT)?;
-    println!("Windows service `{SERVICE_NAME}` started.");
-
-    Ok(())
+    start_service_handle(&service)
 }
 
 fn stop_service() -> Result<()> {
     let service = open_installed_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
-    let status = service.query_status().context("querying service status")?;
-
-    match status.current_state {
-        ServiceState::Stopped => {
-            println!("Windows service `{SERVICE_NAME}` is already stopped.");
-            return Ok(());
-        }
-        ServiceState::StopPending => {
-            wait_for_state(&service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
-            println!("Windows service `{SERVICE_NAME}` stopped.");
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    service.stop().context("stopping Windows service")?;
-    wait_for_state(&service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
-    println!("Windows service `{SERVICE_NAME}` stopped.");
-
-    Ok(())
+    stop_service_handle(&service)
 }
 
 fn uninstall_service() -> Result<()> {
@@ -567,11 +537,8 @@ fn remove_legacy_env_files(directory: &Path) -> Result<()> {
 
 fn seed_config_files(config_dir: &Path) -> Result<()> {
     let source_directories = candidate_config_directories_with([config_dir.to_path_buf()]);
-    let generated = seed_config_toml(config_dir, &source_directories)?;
-
-    if generated.is_some() {
-        remove_legacy_env_files(config_dir)?;
-    }
+    seed_config_toml(config_dir, &source_directories)?;
+    remove_legacy_env_files(config_dir)?;
 
     Ok(())
 }
@@ -644,16 +611,123 @@ fn open_service_manager(access: ServiceManagerAccess) -> Result<ServiceManager> 
 
 fn open_installed_service(access: ServiceAccess) -> Result<windows_service::service::Service> {
     let manager = open_service_manager(ServiceManagerAccess::CONNECT)?;
-    match manager.open_service(SERVICE_NAME, access) {
-        Ok(service) => Ok(service),
-        Err(error) if raw_os_error(&error) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => {
+    match try_open_service(&manager, access)? {
+        Some(service) => Ok(service),
+        None => {
             bail!(
                 "Windows service `{}` is not installed yet; run `{} service install` first",
                 SERVICE_NAME,
                 current_exe_display()?
             )
         }
+    }
+}
+
+fn try_open_service(
+    manager: &ServiceManager,
+    access: ServiceAccess,
+) -> Result<Option<windows_service::service::Service>> {
+    match manager.open_service(SERVICE_NAME, access) {
+        Ok(service) => Ok(Some(service)),
+        Err(error) if raw_os_error(&error) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => Ok(None),
         Err(error) => Err(anyhow!(error).context("opening Windows service")),
+    }
+}
+
+fn start_service_handle(service: &windows_service::service::Service) -> Result<()> {
+    let status = service.query_status().context("querying service status")?;
+
+    match status.current_state {
+        ServiceState::Running => {
+            println!("Windows service `{SERVICE_NAME}` is already running.");
+            return Ok(());
+        }
+        ServiceState::StartPending => {
+            wait_for_state(service, ServiceState::Running, SERVICE_STATE_TIMEOUT)?;
+            println!("Windows service `{SERVICE_NAME}` is running.");
+            return Ok(());
+        }
+        ServiceState::StopPending => {
+            wait_for_state(service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
+        }
+        _ => {}
+    }
+
+    service
+        .start::<OsString>(&[])
+        .context("starting Windows service")?;
+    wait_for_state(service, ServiceState::Running, SERVICE_STATE_TIMEOUT)?;
+    println!("Windows service `{SERVICE_NAME}` started.");
+
+    Ok(())
+}
+
+fn stop_service_handle(service: &windows_service::service::Service) -> Result<()> {
+    let status = service.query_status().context("querying service status")?;
+
+    match status.current_state {
+        ServiceState::Stopped => {
+            println!("Windows service `{SERVICE_NAME}` is already stopped.");
+            return Ok(());
+        }
+        ServiceState::StopPending => {
+            wait_for_state(service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
+            println!("Windows service `{SERVICE_NAME}` stopped.");
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    service.stop().context("stopping Windows service")?;
+    wait_for_state(service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
+    println!("Windows service `{SERVICE_NAME}` stopped.");
+
+    Ok(())
+}
+
+fn stop_service_for_update(service: &windows_service::service::Service) -> Result<bool> {
+    let current_state = wait_for_stable_state_for_update(service, SERVICE_STATE_TIMEOUT)?;
+    let should_restart = matches!(current_state, ServiceState::Running | ServiceState::Paused);
+
+    match current_state {
+        ServiceState::Stopped => Ok(false),
+        ServiceState::StopPending => {
+            wait_for_state(service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
+            Ok(false)
+        }
+        _ => {
+            service
+                .stop()
+                .context("stopping Windows service before update")?;
+            wait_for_state(service, ServiceState::Stopped, SERVICE_STATE_TIMEOUT)?;
+            Ok(should_restart)
+        }
+    }
+}
+
+fn wait_for_stable_state_for_update(
+    service: &windows_service::service::Service,
+    timeout: Duration,
+) -> Result<ServiceState> {
+    let started_at = Instant::now();
+
+    loop {
+        let status = service.query_status().context("querying service state")?;
+        match status.current_state {
+            ServiceState::StartPending
+            | ServiceState::ContinuePending
+            | ServiceState::PausePending => {}
+            state => return Ok(state),
+        }
+
+        if started_at.elapsed() >= timeout {
+            bail!(
+                "timed out waiting for Windows service `{}` to leave a pending transition state",
+                SERVICE_NAME
+            );
+        }
+
+        thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -729,29 +803,18 @@ fn copy_file_if_needed(source: &Path, destination: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    fs::copy(source, destination)?;
-    Ok(())
-}
-
-fn files_match(source: &Path, destination: &Path) -> io::Result<bool> {
-    let source_metadata = fs::metadata(source)?;
-    let destination_metadata = match fs::metadata(destination) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-
-    if source_metadata.len() != destination_metadata.len() {
-        return Ok(false);
-    }
-
-    Ok(fs::read(source)? == fs::read(destination)?)
-}
-
-fn same_path(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
+    let started_at = Instant::now();
+    loop {
+        match fs::copy(source, destination) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if is_retryable_copy_error(&error)
+                    && started_at.elapsed() < FILE_COPY_RETRY_TIMEOUT =>
+            {
+                thread::sleep(FILE_COPY_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -760,6 +823,11 @@ fn raw_os_error(error: &WindowsServiceError) -> Option<i32> {
         WindowsServiceError::Winapi(io_error) => io_error.raw_os_error(),
         _ => None,
     }
+}
+
+fn is_retryable_copy_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied
+        || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
 }
 
 fn is_service_dispatcher_connect_error(error: &WindowsServiceError) -> bool {

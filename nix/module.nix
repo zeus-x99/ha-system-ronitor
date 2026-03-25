@@ -15,16 +15,33 @@ let
     mkIf
     mkOption
     optionalAttrs
+    optionalString
+    recursiveUpdate
     types
     ;
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  renderedConfig = tomlFormat.generate "ha-system-ronitor-config.toml" cfg.settings;
-  configDir = pkgs.runCommand "ha-system-ronitor-config-dir" { } ''
+  mqttPasswordPlaceholder = "__HA_SYSTEM_RONITOR_MQTT_PASSWORD__";
+  renderedSettings =
+    if cfg.mqttPasswordFile == null then
+      cfg.settings
+    else
+      recursiveUpdate cfg.settings {
+        mqtt.password = mqttPasswordPlaceholder;
+      };
+  renderedConfig = tomlFormat.generate "ha-system-ronitor-config.toml" renderedSettings;
+  storeConfigDir = pkgs.runCommand "ha-system-ronitor-config-dir" { } ''
     mkdir -p $out
     ln -s ${renderedConfig} $out/config.toml
   '';
+  runtimeConfigDir = "/run/ha-system-ronitor";
+  effectiveConfigDir = if cfg.mqttPasswordFile == null then storeConfigDir else runtimeConfigDir;
   execStart = lib.concatStringsSep " " (
-    [ (lib.getExe cfg.package) ] ++ map lib.escapeShellArg cfg.extraArgs
+    [
+      (lib.getExe cfg.package)
+      "--config-dir"
+      effectiveConfigDir
+    ]
+    ++ map lib.escapeShellArg cfg.extraArgs
   );
 in
 {
@@ -59,8 +76,15 @@ in
     environmentFile = mkOption {
       type = types.nullOr types.str;
       default = null;
-      example = "/run/secrets/ha-system-ronitor.env";
-      description = "Optional environment file for secrets such as MQTT password.";
+      example = "/run/secrets/ha-system-ronitor-runtime.env";
+      description = "Optional environment file for runtime environment variables such as RUST_LOG or HA_MONITOR_PAWNIO_AUTO_INSTALL.";
+    };
+
+    mqttPasswordFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = "/run/secrets/ha-system-ronitor-mqtt-password";
+      description = "Optional file containing only the MQTT password. This avoids storing the password in the Nix store.";
     };
 
     extraEnvironment = mkOption {
@@ -118,23 +142,11 @@ in
           topic_prefix = "monitor/system";
         };
         sampling = {
-          cpu = {
-            interval_secs = 1;
-            smoothing_window = 5;
-            max_silence_secs = 30;
-          };
-          gpu = {
-            interval_secs = 1;
-            max_silence_secs = 30;
-          };
-          memory = {
-            interval_secs = 5;
-            max_silence_secs = 120;
-          };
-          disk = {
-            interval_secs = 30;
-            max_silence_secs = 900;
-          };
+          cpu.interval_secs = 1;
+          gpu.interval_secs = 1;
+          memory.interval_secs = 5;
+          uptime.interval_secs = 300;
+          disk.interval_secs = 30;
         };
         thresholds = {
           cpu.usage_pct = 1.0;
@@ -160,23 +172,11 @@ in
             topic_prefix = "monitor/system";
           };
           sampling = {
-            cpu = {
-              interval_secs = 1;
-              smoothing_window = 5;
-              max_silence_secs = 30;
-            };
-            gpu = {
-              interval_secs = 1;
-              max_silence_secs = 30;
-            };
-            memory = {
-              interval_secs = 5;
-              max_silence_secs = 120;
-            };
-            disk = {
-              interval_secs = 30;
-              max_silence_secs = 900;
-            };
+            cpu.interval_secs = 1;
+            gpu.interval_secs = 1;
+            memory.interval_secs = 5;
+            uptime.interval_secs = 300;
+            disk.interval_secs = 30;
           };
           thresholds = {
             cpu.usage_pct = 1.0;
@@ -210,23 +210,11 @@ in
             node_id = "router";
             name = "Router System Monitor";
           };
-          sampling.cpu = {
-            interval_secs = 1;
-            smoothing_window = 5;
-            max_silence_secs = 30;
-          };
-          sampling.gpu = {
-            interval_secs = 1;
-            max_silence_secs = 30;
-          };
-          sampling.memory = {
-            interval_secs = 5;
-            max_silence_secs = 120;
-          };
-          sampling.disk = {
-            interval_secs = 30;
-            max_silence_secs = 900;
-          };
+          sampling.cpu.interval_secs = 1;
+          sampling.gpu.interval_secs = 1;
+          sampling.memory.interval_secs = 5;
+          sampling.uptime.interval_secs = 300;
+          sampling.disk.interval_secs = 30;
           thresholds.cpu.usage_pct = 1.0;
           thresholds.gpu = {
             usage_pct = 1.0;
@@ -241,7 +229,7 @@ in
           };
         }
       '';
-      description = "Configuration rendered to config.toml. Put non-secret settings here; use environmentFile for secrets such as mqtt.password.";
+      description = "Configuration rendered to config.toml. This is the only application configuration source.";
     };
   };
 
@@ -249,8 +237,8 @@ in
     assertions = [
       {
         assertion =
-          !(attrByPath [ "mqtt" "password" ] null cfg.settings != null && cfg.environmentFile != null);
-        message = "Use either services.ha-system-ronitor.settings.mqtt.password or environmentFile, not both.";
+          !(attrByPath [ "mqtt" "password" ] null cfg.settings != null && cfg.mqttPasswordFile != null);
+        message = "Use either services.ha-system-ronitor.settings.mqtt.password or services.ha-system-ronitor.mqttPasswordFile, not both.";
       }
     ];
 
@@ -274,10 +262,24 @@ in
         path
         ;
 
-      environment = {
-        HA_MONITOR_CONFIG_DIR = configDir;
-      }
-      // cfg.extraEnvironment;
+      environment = cfg.extraEnvironment;
+
+      preStart = optionalString (cfg.mqttPasswordFile != null) ''
+        install -d -m 0750 ${runtimeConfigDir}
+        cp ${renderedConfig} ${runtimeConfigDir}/config.toml
+        ${pkgs.python3}/bin/python - <<'PY'
+from pathlib import Path
+import json
+
+config_path = Path("${runtimeConfigDir}/config.toml")
+password_path = Path("${cfg.mqttPasswordFile}")
+placeholder = "\"${mqttPasswordPlaceholder}\""
+
+password = password_path.read_text(encoding="utf-8").rstrip("\r\n")
+content = config_path.read_text(encoding="utf-8")
+config_path.write_text(content.replace(placeholder, json.dumps(password)), encoding="utf-8")
+PY
+      '';
 
       serviceConfig = {
         ExecStart = execStart;
@@ -299,6 +301,10 @@ in
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
         SystemCallArchitectures = "native";
+      }
+      // optionalAttrs (cfg.mqttPasswordFile != null) {
+        RuntimeDirectory = "ha-system-ronitor";
+        RuntimeDirectoryMode = "0750";
       }
       // optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;

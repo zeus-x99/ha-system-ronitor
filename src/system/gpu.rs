@@ -96,9 +96,16 @@ mod nvml_native {
 use nvml_native::NvidiaGpuReader;
 
 #[cfg(target_os = "windows")]
+use std::time::Instant;
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const GPU_BACKEND_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(target_os = "windows")]
 #[derive(Debug)]
 pub struct GpuReader {
     nvml_reader: Option<NvidiaGpuReader>,
+    last_probe_at: Option<Instant>,
 }
 
 #[cfg(target_os = "windows")]
@@ -113,11 +120,37 @@ impl GpuReader {
     pub fn new() -> Self {
         Self {
             nvml_reader: NvidiaGpuReader::new(),
+            last_probe_at: Some(Instant::now()),
         }
     }
 
     pub fn read(&mut self) -> Option<crate::system::models::GpuState> {
+        self.ensure_nvml_reader();
+        let state = self.nvml_reader.as_ref().and_then(NvidiaGpuReader::read);
+        if state.is_some() || self.nvml_reader.is_none() {
+            return state;
+        }
+
+        self.nvml_reader = None;
+        self.last_probe_at = None;
+        self.ensure_nvml_reader();
         self.nvml_reader.as_ref().and_then(NvidiaGpuReader::read)
+    }
+
+    fn ensure_nvml_reader(&mut self) {
+        if self.nvml_reader.is_some() {
+            return;
+        }
+
+        let should_probe = self
+            .last_probe_at
+            .is_none_or(|instant| instant.elapsed() >= GPU_BACKEND_RETRY_INTERVAL);
+        if !should_probe {
+            return;
+        }
+
+        self.last_probe_at = Some(Instant::now());
+        self.nvml_reader = NvidiaGpuReader::new();
     }
 }
 
@@ -141,6 +174,7 @@ mod linux_native {
     #[derive(Debug)]
     pub struct GpuReader {
         backend: Option<GpuBackend>,
+        last_probe_at: Option<Instant>,
     }
 
     #[derive(Debug)]
@@ -243,16 +277,51 @@ mod linux_native {
 
     impl GpuReader {
         pub fn new() -> Self {
-            let backend = NvidiaGpuReader::new()
-                .map(GpuBackend::Nvidia)
-                .or_else(|| LinuxSysfsGpuReader::new().map(GpuBackend::Sysfs));
-
-            Self { backend }
+            Self {
+                backend: probe_backend(),
+                last_probe_at: Some(Instant::now()),
+            }
         }
 
         pub fn read(&mut self) -> Option<GpuState> {
+            self.ensure_backend();
+            let state = self.backend.as_mut().and_then(GpuBackend::read);
+            if state.is_some()
+                || !self
+                    .backend
+                    .as_ref()
+                    .is_some_and(GpuBackend::should_reprobe_after_read_failure)
+            {
+                return state;
+            }
+
+            self.backend = None;
+            self.last_probe_at = None;
+            self.ensure_backend();
             self.backend.as_mut().and_then(GpuBackend::read)
         }
+
+        fn ensure_backend(&mut self) {
+            if self.backend.is_some() {
+                return;
+            }
+
+            let should_probe = self
+                .last_probe_at
+                .is_none_or(|instant| instant.elapsed() >= GPU_BACKEND_RETRY_INTERVAL);
+            if !should_probe {
+                return;
+            }
+
+            self.last_probe_at = Some(Instant::now());
+            self.backend = probe_backend();
+        }
+    }
+
+    fn probe_backend() -> Option<GpuBackend> {
+        NvidiaGpuReader::new()
+            .map(GpuBackend::Nvidia)
+            .or_else(|| LinuxSysfsGpuReader::new().map(GpuBackend::Sysfs))
     }
 
     impl GpuBackend {
@@ -261,6 +330,10 @@ mod linux_native {
                 Self::Nvidia(reader) => reader.read(),
                 Self::Sysfs(reader) => reader.read(),
             }
+        }
+
+        fn should_reprobe_after_read_failure(&self) -> bool {
+            matches!(self, Self::Nvidia(_))
         }
     }
 
@@ -328,17 +401,18 @@ mod linux_native {
         }
 
         fn read(&mut self) -> Option<GpuState> {
-            let gpu_usage = self
-                .usage_source
-                .as_mut()
-                .and_then(UsageSource::read)
-                .unwrap_or_default();
+            let gpu_usage = self.usage_source.as_mut().and_then(UsageSource::read);
+            let gpu_memory = self.memory_source.as_ref().and_then(MemorySource::read);
+            let usage_source_failed = self.usage_source.is_some() && gpu_usage.is_none();
+            let memory_source_failed = self.memory_source.is_some() && gpu_memory.is_none();
+            let all_sources_failed = (self.usage_source.is_none() || usage_source_failed)
+                && (self.memory_source.is_none() || memory_source_failed);
+            if all_sources_failed {
+                return None;
+            }
 
-            let (gpu_memory_total, gpu_memory_used) = self
-                .memory_source
-                .as_ref()
-                .and_then(MemorySource::read)
-                .unwrap_or((0, 0));
+            let gpu_usage = gpu_usage.unwrap_or_default();
+            let (gpu_memory_total, gpu_memory_used) = gpu_memory.unwrap_or((0, 0));
             let gpu_memory_used = gpu_memory_used.min(gpu_memory_total);
 
             Some(GpuState {

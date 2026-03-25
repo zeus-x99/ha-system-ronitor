@@ -49,6 +49,7 @@ mod windows_backend {
         executor: PawnIoExecutor,
         access_pci_mutex: Option<HANDLE>,
         ioctl_read_smn_name: CString,
+        recreate_after_failure: bool,
     }
 
     impl std::fmt::Debug for PawnIoCpuTemperatureReader {
@@ -107,26 +108,47 @@ mod windows_backend {
                 },
                 access_pci_mutex: open_access_pci_mutex(),
                 ioctl_read_smn_name: CString::new("ioctl_read_smn").ok()?,
+                recreate_after_failure: false,
             })
         }
 
         pub fn read(&mut self) -> Option<f32> {
-            self.read_temperature_register_raw()
-                .and_then(decode_zen_temperature)
-                .map(|value| value as f32 / 1000.0)
+            self.recreate_after_failure = false;
+
+            match self.read_temperature_register_raw() {
+                Ok(register_value) => decode_zen_temperature(register_value)
+                    .map(|value| value as f32 / 1000.0)
+                    .or_else(|| {
+                        self.recreate_after_failure = true;
+                        None
+                    }),
+                Err(ReadFailureKind::Transient) => None,
+                Err(ReadFailureKind::Fatal) => {
+                    self.recreate_after_failure = true;
+                    None
+                }
+            }
         }
 
-        fn read_temperature_register_raw(&mut self) -> Option<u32> {
+        pub fn should_recreate_after_failure(&self) -> bool {
+            self.recreate_after_failure
+        }
+
+        fn read_temperature_register_raw(&mut self) -> Result<u32, ReadFailureKind> {
             self.read_smn(ZEN_REPORTED_TEMP_CTRL_BASE)
         }
 
-        fn read_smn(&mut self, address: u32) -> Option<u32> {
+        fn read_smn(&mut self, address: u32) -> Result<u32, ReadFailureKind> {
             let _guard = AccessPciGuard::acquire(self.access_pci_mutex, PAWNIO_TIMEOUT)?;
             self.execute_scalar(&self.ioctl_read_smn_name, &[address as u64])
                 .map(|value| value as u32)
         }
 
-        fn execute_scalar(&self, function_name: &CString, input: &[u64]) -> Option<u64> {
+        fn execute_scalar(
+            &self,
+            function_name: &CString,
+            input: &[u64],
+        ) -> Result<u64, ReadFailureKind> {
             let mut output = [0u64; 1];
             let mut return_size = 0usize;
 
@@ -148,7 +170,7 @@ mod windows_backend {
                     hresult = format_hresult(execute_result),
                     "PawnIO execute failed"
                 );
-                return None;
+                return Err(ReadFailureKind::Fatal);
             }
 
             if return_size == 0 {
@@ -156,11 +178,17 @@ mod windows_backend {
                     operation = function_name.to_string_lossy().into_owned(),
                     "PawnIO execute returned no data"
                 );
-                return None;
+                return Err(ReadFailureKind::Fatal);
             }
 
-            Some(output[0])
+            Ok(output[0])
         }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ReadFailureKind {
+        Transient,
+        Fatal,
     }
 
     impl Drop for PawnIoCpuTemperatureReader {
@@ -193,28 +221,31 @@ mod windows_backend {
     }
 
     impl AccessPciGuard {
-        fn acquire(handle: Option<HANDLE>, timeout: Duration) -> Option<Option<Self>> {
+        fn acquire(
+            handle: Option<HANDLE>,
+            timeout: Duration,
+        ) -> Result<Option<Self>, ReadFailureKind> {
             let Some(handle) = handle else {
-                return Some(None);
+                return Ok(None);
             };
 
             let wait_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
             let wait_result = unsafe { WaitForSingleObject(handle, wait_ms) };
 
             if wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED {
-                return Some(Some(Self { handle }));
+                return Ok(Some(Self { handle }));
             }
 
             if wait_result == WAIT_TIMEOUT {
                 debug!("timed out waiting for Global\\Access_PCI");
+                Err(ReadFailureKind::Transient)
             } else {
                 debug!(
                     wait_result = wait_result.0,
                     "failed waiting for Global\\Access_PCI"
                 );
+                Err(ReadFailureKind::Fatal)
             }
-
-            None
         }
     }
 
@@ -466,5 +497,9 @@ impl PawnIoCpuTemperatureReader {
 
     pub fn read(&mut self) -> Option<f32> {
         None
+    }
+
+    pub fn should_recreate_after_failure(&self) -> bool {
+        false
     }
 }

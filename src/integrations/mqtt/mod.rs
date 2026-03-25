@@ -4,10 +4,8 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::device::{Identity, Topics};
-use crate::integrations::home_assistant::discovery::{
-    build_device_discovery_message, build_removed_device_components_cleanup_payload,
-};
-use crate::system::models::{CpuState, DiskState, GpuState, MemoryState};
+use crate::integrations::home_assistant::discovery::build_device_discovery_message;
+use crate::system::models::{CpuState, DiskState, GpuState, MemoryState, UptimeState};
 
 const MQTT_MAX_PACKET_SIZE: usize = 64 * 1024;
 
@@ -69,31 +67,6 @@ pub async fn publish_discovery_if_needed(
         return Ok(());
     }
 
-    if let Some(cleanup_payload) = build_removed_device_components_cleanup_payload(
-        args.config,
-        args.identity,
-        args.topics,
-        args.gpu_state,
-        args.disk_state,
-    ) {
-        client
-            .publish(
-                message.topic.clone(),
-                QoS::AtLeastOnce,
-                true,
-                cleanup_payload,
-            )
-            .await
-            .context("failed to publish device discovery cleanup payload")?;
-    }
-
-    for (component_id, topic) in &message.legacy_topics {
-        client
-            .publish(topic.clone(), QoS::AtLeastOnce, true, Vec::<u8>::new())
-            .await
-            .with_context(|| format!("failed to clear legacy discovery topic: {component_id}"))?;
-    }
-
     client
         .publish(
             message.topic.clone(),
@@ -107,7 +80,6 @@ pub async fn publish_discovery_if_needed(
     *last_payload = Some(device_payload);
     info!(
         component_count = message.component_count(),
-        legacy_topic_count = message.legacy_topics.len(),
         "published Home Assistant device discovery payload"
     );
 
@@ -124,6 +96,25 @@ pub async fn publish_cpu_state(
         .publish(topics.cpu_state.clone(), QoS::AtLeastOnce, false, payload)
         .await
         .context("failed to publish CPU state payload")?;
+
+    Ok(())
+}
+
+pub async fn publish_uptime_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &UptimeState,
+) -> Result<()> {
+    let payload = serde_json::to_vec(state).context("failed to serialize uptime state payload")?;
+    client
+        .publish(
+            topics.uptime_state.clone(),
+            QoS::AtLeastOnce,
+            false,
+            payload,
+        )
+        .await
+        .context("failed to publish uptime state payload")?;
 
     Ok(())
 }

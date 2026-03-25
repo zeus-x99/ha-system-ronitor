@@ -6,96 +6,108 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use clap::Parser;
+use rumqttc::mqttbytes::v4::SubscribeReasonCode;
 use rumqttc::{AsyncClient, Event, Outgoing, Packet, QoS};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 
-use crate::config::{BootstrapOptions, Config, load_config_file_from};
+use crate::config::{BootstrapOptions, Config, load_config};
 use crate::device::{Identity, Topics};
 use crate::integrations::mqtt::{
     DiscoveryPublishArgs, build_mqtt_options, is_home_assistant_birth_message,
     publish_availability, publish_cpu_state, publish_discovery_if_needed, publish_disk_state,
-    publish_gpu_state, publish_memory_state,
+    publish_gpu_state, publish_memory_state, publish_uptime_state,
 };
 use crate::system::collector::Collector;
-use crate::system::models::{CpuState, DiskState, GpuState, MemoryState};
+use crate::system::models::{CpuState, DiskState, GpuState, MemoryState, UptimeState};
 use crate::system::power::shutdown_host;
 
-#[derive(Debug)]
-struct CpuSmoother {
-    samples: VecDeque<f32>,
-    sum: f32,
-    window: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryLayout {
+    has_gpu: bool,
+    has_gpu_temperature: bool,
+    has_gpu_memory: bool,
+    disks: Vec<(String, String)>,
+}
+
+#[derive(Debug, Default)]
+struct DiscoveryState {
+    last_payload: Option<Vec<u8>>,
+    last_layout: Option<DiscoveryLayout>,
+}
+
+struct PublishContext<'a> {
+    client: &'a AsyncClient,
+    config: &'a Config,
+    identity: &'a Identity,
+    topics: &'a Topics,
+}
+
+struct FullSnapshot {
+    cpu_state: CpuState,
+    uptime_state: UptimeState,
+    gpu_state: Option<GpuState>,
+    memory_state: MemoryState,
+    disk_state: DiskState,
+}
+
+const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default)]
+struct SubscriptionState {
+    ha_status: TopicSubscription,
+    shutdown_command: TopicSubscription,
+    pending_outgoing: VecDeque<SubscriptionTarget>,
+    pending_subacks: Vec<PendingSubscriptionAck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscriptionTarget {
+    HomeAssistantStatus,
+    ShutdownCommand,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingSubscriptionAck {
+    target: SubscriptionTarget,
+    pkid: u16,
+}
+
+#[derive(Debug, Default)]
+struct TopicSubscription {
+    desired: bool,
+    request_queued: bool,
+    awaiting_suback: bool,
+    subscribed: bool,
+    last_request_at: Option<Instant>,
 }
 
 #[derive(Debug)]
 struct PublishedSlot<T> {
     state: Option<T>,
-    last_sent_at: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
 struct PublishedStates {
     cpu: PublishedSlot<CpuState>,
+    uptime: PublishedSlot<UptimeState>,
     gpu: PublishedSlot<GpuState>,
     memory: PublishedSlot<MemoryState>,
     disk: PublishedSlot<DiskState>,
 }
 
-impl CpuSmoother {
-    fn new(window: usize) -> Self {
-        Self {
-            samples: VecDeque::with_capacity(window),
-            sum: 0.0,
-            window,
-        }
-    }
-
-    fn smooth(&mut self, raw: CpuState) -> CpuState {
-        self.samples.push_back(raw.cpu_usage);
-        self.sum += raw.cpu_usage;
-
-        while self.samples.len() > self.window {
-            if let Some(removed) = self.samples.pop_front() {
-                self.sum -= removed;
-            }
-        }
-
-        let smoothed = if self.samples.is_empty() {
-            raw.cpu_usage
-        } else {
-            self.sum / self.samples.len() as f32
-        };
-
-        CpuState {
-            timestamp: raw.timestamp,
-            cpu_usage: smoothed,
-            cpu_package_temp: raw.cpu_package_temp,
-            cpu_model: raw.cpu_model,
-            os_version: raw.os_version,
-            uptime: raw.uptime,
-        }
-    }
-}
-
 impl<T> PublishedSlot<T> {
     fn new() -> Self {
-        Self {
-            state: None,
-            last_sent_at: None,
-        }
+        Self { state: None }
     }
 
-    fn should_force_publish(&self, max_silence: Duration) -> bool {
-        self.last_sent_at
-            .is_none_or(|instant| instant.elapsed() >= max_silence)
+    fn clear(&mut self) {
+        self.state = None;
     }
 
     fn mark_published(&mut self, state: T) {
         self.state = Some(state);
-        self.last_sent_at = Some(Instant::now());
     }
 }
 
@@ -105,10 +117,98 @@ impl<T> Default for PublishedSlot<T> {
     }
 }
 
+impl DiscoveryLayout {
+    fn from_states(gpu_state: Option<&GpuState>, disk_state: &DiskState) -> Self {
+        Self {
+            has_gpu: gpu_state.is_some(),
+            has_gpu_temperature: gpu_state.is_some_and(|state| state.gpu_temperature.is_some()),
+            has_gpu_memory: gpu_state.is_some_and(|state| state.gpu_memory_total > 0),
+            disks: disk_state
+                .disks
+                .iter()
+                .map(|(disk_id, disk)| (disk_id.clone(), disk.mount_point.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl SubscriptionState {
+    fn prepare_for_connection(&mut self, enable_shutdown_button: bool) {
+        self.reset_runtime();
+        self.ha_status.desired = true;
+        self.shutdown_command.desired = enable_shutdown_button;
+    }
+
+    fn reset_runtime(&mut self) {
+        *self = Self::default();
+    }
+
+    fn should_request(&self, target: SubscriptionTarget) -> bool {
+        let subscription = self.subscription(target);
+        subscription.desired
+            && !subscription.subscribed
+            && !subscription.request_queued
+            && !subscription.awaiting_suback
+            && subscription
+                .last_request_at
+                .is_none_or(|instant| instant.elapsed() >= SUBSCRIPTION_RETRY_INTERVAL)
+    }
+
+    fn mark_request_queued(&mut self, target: SubscriptionTarget) {
+        let subscription = self.subscription_mut(target);
+        subscription.request_queued = true;
+        subscription.last_request_at = Some(Instant::now());
+        self.pending_outgoing.push_back(target);
+    }
+
+    fn mark_request_sent(&mut self, pkid: u16) {
+        let Some(target) = self.pending_outgoing.pop_front() else {
+            return;
+        };
+
+        let subscription = self.subscription_mut(target);
+        subscription.request_queued = false;
+        subscription.awaiting_suback = true;
+        self.pending_subacks
+            .push(PendingSubscriptionAck { target, pkid });
+    }
+
+    fn handle_suback(&mut self, pkid: u16, success: bool) {
+        let Some(index) = self
+            .pending_subacks
+            .iter()
+            .position(|pending| pending.pkid == pkid)
+        else {
+            return;
+        };
+        let pending = self.pending_subacks.swap_remove(index);
+        let subscription = self.subscription_mut(pending.target);
+        subscription.awaiting_suback = false;
+        subscription.subscribed = success;
+        if !success {
+            subscription.last_request_at = Some(Instant::now());
+        }
+    }
+
+    fn subscription(&self, target: SubscriptionTarget) -> &TopicSubscription {
+        match target {
+            SubscriptionTarget::HomeAssistantStatus => &self.ha_status,
+            SubscriptionTarget::ShutdownCommand => &self.shutdown_command,
+        }
+    }
+
+    fn subscription_mut(&mut self, target: SubscriptionTarget) -> &mut TopicSubscription {
+        match target {
+            SubscriptionTarget::HomeAssistantStatus => &mut self.ha_status,
+            SubscriptionTarget::ShutdownCommand => &mut self.shutdown_command,
+        }
+    }
+}
+
 pub async fn run() -> Result<()> {
     let bootstrap = BootstrapOptions::from_current_process();
     initialize_runtime_with(&bootstrap)?;
-    let config = Config::parse();
+    let config = load_config(&bootstrap)?;
     run_with_config(config, async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             error!(%error, "failed to listen for ctrl-c");
@@ -122,9 +222,6 @@ pub fn initialize_runtime() {
 }
 
 pub fn initialize_runtime_with(bootstrap: &BootstrapOptions) -> Result<()> {
-    let config_directories = bootstrap.config_directories();
-    load_config_file_from(&config_directories)?;
-
     static TRACING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
     match TRACING_INIT.get_or_init(|| init_tracing(bootstrap).map_err(|error| format!("{error:#}")))
     {
@@ -133,21 +230,12 @@ pub fn initialize_runtime_with(bootstrap: &BootstrapOptions) -> Result<()> {
     }
 }
 
-pub fn parse_config_from<I, T>(args: I) -> Result<Config>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-{
-    Config::try_parse_from(args).map_err(Into::into)
-}
-
 pub async fn run_with_config<F>(config: Config, shutdown_signal: F) -> Result<()>
 where
     F: Future<Output = ()>,
 {
     let identity = Identity::detect(&config);
     let topics = Topics::from_config(&config, &identity.node_id);
-    let cpu_smoothing_window = config.cpu_smoothing_window.max(1);
 
     info!(
         device_name = %identity.device_name,
@@ -157,35 +245,31 @@ where
         cpu_interval_secs = config.cpu_interval_secs,
         gpu_interval_secs = config.gpu_interval_secs,
         memory_interval_secs = config.memory_interval_secs,
+        uptime_interval_secs = config.uptime_interval_secs,
         disk_interval_secs = config.disk_interval_secs,
         cpu_change_threshold_pct = config.cpu_change_threshold_pct,
         gpu_usage_change_threshold_pct = config.gpu_usage_change_threshold_pct,
         gpu_memory_change_threshold_mib = config.gpu_memory_change_threshold_mib,
         memory_change_threshold_mib = config.memory_change_threshold_mib,
         disk_change_threshold_mib = config.disk_change_threshold_mib,
-        cpu_smoothing_window = cpu_smoothing_window,
-        cpu_max_silence_secs = config.cpu_max_silence_secs,
-        gpu_max_silence_secs = config.gpu_max_silence_secs,
-        memory_max_silence_secs = config.memory_max_silence_secs,
-        disk_max_silence_secs = config.disk_max_silence_secs,
         enable_shutdown_button = config.enable_shutdown_button,
         shutdown_dry_run = config.shutdown_dry_run,
         "starting Home Assistant system monitor"
     );
 
-    let cpu_max_silence = Duration::from_secs(config.cpu_max_silence_secs);
-    let gpu_max_silence = Duration::from_secs(config.gpu_max_silence_secs);
-    let memory_max_silence = Duration::from_secs(config.memory_max_silence_secs);
-    let disk_max_silence = Duration::from_secs(config.disk_max_silence_secs);
-
     let mut collector = Collector::new(&identity).await;
-    let mut cpu_smoother = CpuSmoother::new(cpu_smoothing_window);
-    let mut last_discovery_payload = None;
+    let mut discovery_state = DiscoveryState::default();
     let mut published_states = PublishedStates::default();
     let mut mqtt_options = build_mqtt_options(&config, &identity, &topics);
     mqtt_options.set_keep_alive(Duration::from_secs(30));
 
     let (client, mut eventloop) = AsyncClient::new(mqtt_options, 256);
+    let publish_context = PublishContext {
+        client: &client,
+        config: &config,
+        identity: &identity,
+        topics: &topics,
+    };
 
     let mut cpu_interval = tokio::time::interval(Duration::from_secs(config.cpu_interval_secs));
     cpu_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -197,10 +281,16 @@ where
         tokio::time::interval(Duration::from_secs(config.memory_interval_secs));
     memory_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    let mut uptime_interval =
+        tokio::time::interval(Duration::from_secs(config.uptime_interval_secs));
+    uptime_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut disk_interval = tokio::time::interval(Duration::from_secs(config.disk_interval_secs));
     disk_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut connected = false;
+    let mut availability_online_pending = false;
+    let mut subscription_state = SubscriptionState::default();
     let mut shutdown_signal = Box::pin(shutdown_signal);
 
     loop {
@@ -217,41 +307,43 @@ where
                 match event {
                     Ok(Event::Incoming(Packet::ConnAck(_))) => {
                         connected = true;
+                        availability_online_pending = true;
+                        subscription_state.prepare_for_connection(config.enable_shutdown_button);
                         info!("MQTT connected");
-                        client.subscribe(topics.ha_status.clone(), QoS::AtLeastOnce).await?;
-                        if config.enable_shutdown_button {
-                            client.subscribe(topics.shutdown_command.clone(), QoS::AtLeastOnce).await?;
-                        }
-                        publish_availability(&client, &topics, true).await?;
-
-                        let (raw_cpu_state, gpu_state, memory_state, disk_state) = collector.sample_all()?;
-                        let cpu_state = cpu_smoother.smooth(raw_cpu_state);
-
-                        publish_discovery_if_needed(
+                        ensure_runtime_subscriptions(
                             &client,
-                            DiscoveryPublishArgs {
-                                config: &config,
-                                identity: &identity,
-                                topics: &topics,
-                                gpu_state: gpu_state.as_ref(),
-                                disk_state: &disk_state,
-                            },
-                            &mut last_discovery_payload,
-                            true,
-                        ).await?;
-                        publish_cpu_state(&client, &topics, &cpu_state).await?;
-                        if let Some(gpu_state) = &gpu_state {
-                            publish_gpu_state(&client, &topics, gpu_state).await?;
-                        }
-                        publish_memory_state(&client, &topics, &memory_state).await?;
-                        publish_disk_state(&client, &topics, &disk_state).await?;
+                            &topics,
+                            &mut subscription_state,
+                        )
+                        .await;
 
-                        published_states.cpu.mark_published(cpu_state);
-                        if let Some(gpu_state) = gpu_state {
-                            published_states.gpu.mark_published(gpu_state);
+                        let (cpu_state, uptime_state, gpu_state, memory_state, disk_state) =
+                            collector.sample_all();
+                        publish_full_snapshot(
+                            &publish_context,
+                            FullSnapshot {
+                                cpu_state,
+                                uptime_state,
+                                gpu_state,
+                                memory_state,
+                                disk_state,
+                            },
+                            &mut discovery_state,
+                            &mut published_states,
+                            &mut availability_online_pending,
+                            true,
+                        )
+                        .await;
+                    }
+                    Ok(Event::Incoming(Packet::SubAck(suback))) => {
+                        let success = suback
+                            .return_codes
+                            .iter()
+                            .all(|code| !matches!(code, SubscribeReasonCode::Failure));
+                        if !success {
+                            warn!(pkid = suback.pkid, ?suback.return_codes, "subscription rejected by broker");
                         }
-                        published_states.memory.mark_published(memory_state);
-                        published_states.disk.mark_published(disk_state);
+                        subscription_state.handle_suback(suback.pkid, success);
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if config.enable_shutdown_button
@@ -285,37 +377,31 @@ where
                         info!("Home Assistant birth message received, refreshing discovery");
                         tokio::time::sleep(discovery_birth_delay(&identity.node_id)).await;
 
-                        let (raw_cpu_state, gpu_state, memory_state, disk_state) = collector.sample_all()?;
-                        let cpu_state = cpu_smoother.smooth(raw_cpu_state);
-
-                        publish_discovery_if_needed(
-                            &client,
-                            DiscoveryPublishArgs {
-                                config: &config,
-                                identity: &identity,
-                                topics: &topics,
-                                gpu_state: gpu_state.as_ref(),
-                                disk_state: &disk_state,
+                        let (cpu_state, uptime_state, gpu_state, memory_state, disk_state) =
+                            collector.sample_all();
+                        publish_full_snapshot(
+                            &publish_context,
+                            FullSnapshot {
+                                cpu_state,
+                                uptime_state,
+                                gpu_state,
+                                memory_state,
+                                disk_state,
                             },
-                            &mut last_discovery_payload,
+                            &mut discovery_state,
+                            &mut published_states,
+                            &mut availability_online_pending,
                             true,
-                        ).await?;
-                        publish_cpu_state(&client, &topics, &cpu_state).await?;
-                        if let Some(gpu_state) = &gpu_state {
-                            publish_gpu_state(&client, &topics, gpu_state).await?;
-                        }
-                        publish_memory_state(&client, &topics, &memory_state).await?;
-                        publish_disk_state(&client, &topics, &disk_state).await?;
-
-                        published_states.cpu.mark_published(cpu_state);
-                        if let Some(gpu_state) = gpu_state {
-                            published_states.gpu.mark_published(gpu_state);
-                        }
-                        published_states.memory.mark_published(memory_state);
-                        published_states.disk.mark_published(disk_state);
+                        )
+                        .await;
+                    }
+                    Ok(Event::Outgoing(Outgoing::Subscribe(pkid))) => {
+                        subscription_state.mark_request_sent(pkid);
                     }
                     Ok(Event::Outgoing(Outgoing::Disconnect)) => {
                         connected = false;
+                        availability_online_pending = false;
+                        subscription_state.reset_runtime();
                         info!("MQTT disconnected");
                     }
                     Ok(other) => {
@@ -323,6 +409,8 @@ where
                     }
                     Err(error) => {
                         connected = false;
+                        availability_online_pending = false;
+                        subscription_state.reset_runtime();
                         warn!(%error, "MQTT event loop error, waiting before retry");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -333,7 +421,8 @@ where
                     continue;
                 }
 
-                let cpu_state = cpu_smoother.smooth(collector.sample_cpu());
+                let cpu_state = collector.sample_cpu();
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
                 let changed = published_states
                     .cpu
                     .state
@@ -341,16 +430,50 @@ where
                     .is_none_or(|previous| {
                         cpu_state.changed_significantly_from(previous, config.cpu_change_threshold_pct)
                     });
-                let force_publish = published_states.cpu.should_force_publish(cpu_max_silence);
-
-                if !(changed || force_publish) {
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+                if !changed {
                     continue;
                 }
 
                 if let Err(error) = publish_cpu_state(&client, &topics, &cpu_state).await {
                     error!(%error, "failed to publish CPU state");
+                    published_states.cpu.clear();
                 } else {
                     published_states.cpu.mark_published(cpu_state);
+                }
+            }
+            _ = uptime_interval.tick() => {
+                if !connected {
+                    continue;
+                }
+
+                let uptime_state = collector.sample_uptime();
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                let changed = published_states
+                    .uptime
+                    .state
+                    .as_ref()
+                    .is_none_or(|previous| uptime_state.changed_from(previous));
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+                if !changed {
+                    continue;
+                }
+
+                if let Err(error) = publish_uptime_state(&client, &topics, &uptime_state).await {
+                    error!(%error, "failed to publish uptime state");
+                    published_states.uptime.clear();
+                } else {
+                    published_states.uptime.mark_published(uptime_state);
                 }
             }
             _ = gpu_interval.tick() => {
@@ -358,7 +481,25 @@ where
                     continue;
                 }
 
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
                 if let Some(gpu_state) = collector.sample_gpu() {
+                    if let Some(disk_state) = published_states.disk.state.as_ref() {
+                        refresh_discovery_layout(
+                            &publish_context,
+                            Some(&gpu_state),
+                            disk_state,
+                            &mut discovery_state,
+                            false,
+                        )
+                        .await;
+                    }
+
                     let changed = published_states
                         .gpu
                         .state
@@ -370,16 +511,27 @@ where
                                 config.gpu_memory_change_threshold_bytes(),
                             )
                         });
-                    let force_publish = published_states.gpu.should_force_publish(gpu_max_silence);
-
-                    if !(changed || force_publish) {
+                    if !changed {
                         continue;
                     }
 
                     if let Err(error) = publish_gpu_state(&client, &topics, &gpu_state).await {
                         error!(%error, "failed to publish GPU state");
+                        published_states.gpu.clear();
                     } else {
                         published_states.gpu.mark_published(gpu_state);
+                    }
+                } else {
+                    published_states.gpu.clear();
+                    if let Some(disk_state) = published_states.disk.state.as_ref() {
+                        refresh_discovery_layout(
+                            &publish_context,
+                            None,
+                            disk_state,
+                            &mut discovery_state,
+                            false,
+                        )
+                        .await;
                     }
                 }
             }
@@ -389,6 +541,7 @@ where
                 }
 
                 let memory_state = collector.sample_memory();
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
                 let changed = published_states
                     .memory
                     .state
@@ -399,14 +552,19 @@ where
                             config.memory_change_threshold_bytes(),
                         )
                     });
-                let force_publish = published_states.memory.should_force_publish(memory_max_silence);
-
-                if !(changed || force_publish) {
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+                if !changed {
                     continue;
                 }
 
                 if let Err(error) = publish_memory_state(&client, &topics, &memory_state).await {
                     error!(%error, "failed to publish memory state");
+                    published_states.memory.clear();
                 } else {
                     published_states.memory.mark_published(memory_state);
                 }
@@ -417,8 +575,10 @@ where
                 }
 
                 let disk_state = collector.sample_disks();
-                let gpu_state_for_discovery =
-                    collector.sample_gpu().or_else(|| published_states.gpu.state.clone());
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                let gpu_state_for_discovery = published_states.gpu.state.as_ref();
+                let next_layout =
+                    DiscoveryLayout::from_states(gpu_state_for_discovery, &disk_state);
                 let changed = published_states
                     .disk
                     .state
@@ -429,30 +589,31 @@ where
                             config.disk_change_threshold_bytes(),
                         )
                     });
-                let force_publish = published_states.disk.should_force_publish(disk_max_silence);
 
-                if let Err(error) = publish_discovery_if_needed(
+                publish_online_availability_if_needed(
                     &client,
-                    DiscoveryPublishArgs {
-                        config: &config,
-                        identity: &identity,
-                        topics: &topics,
-                        gpu_state: gpu_state_for_discovery.as_ref(),
-                        disk_state: &disk_state,
-                    },
-                    &mut last_discovery_payload,
-                    false,
-                ).await {
-                    error!(%error, "failed to publish discovery payload");
-                    continue;
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+                if discovery_state.last_layout.as_ref() != Some(&next_layout) {
+                    refresh_discovery_layout(
+                        &publish_context,
+                        gpu_state_for_discovery,
+                        &disk_state,
+                        &mut discovery_state,
+                        false,
+                    )
+                    .await;
                 }
 
-                if !(changed || force_publish) {
+                if !changed {
                     continue;
                 }
 
                 if let Err(error) = publish_disk_state(&client, &topics, &disk_state).await {
                     error!(%error, "failed to publish disk state");
+                    published_states.disk.clear();
                 } else {
                     published_states.disk.mark_published(disk_state);
                 }
@@ -500,4 +661,197 @@ fn discovery_birth_delay(node_id: &str) -> Duration {
     node_id.hash(&mut hasher);
     let jitter_ms = 250 + (hasher.finish() % 1_251);
     Duration::from_millis(jitter_ms)
+}
+
+async fn ensure_runtime_subscriptions(
+    client: &AsyncClient,
+    topics: &Topics,
+    subscription_state: &mut SubscriptionState,
+) {
+    if subscription_state.should_request(SubscriptionTarget::HomeAssistantStatus) {
+        if let Err(error) = client
+            .subscribe(topics.ha_status.clone(), QoS::AtLeastOnce)
+            .await
+        {
+            error!(
+                %error,
+                topic = %topics.ha_status,
+                "failed to subscribe Home Assistant status topic"
+            );
+        } else {
+            subscription_state.mark_request_queued(SubscriptionTarget::HomeAssistantStatus);
+        }
+    }
+
+    if subscription_state.should_request(SubscriptionTarget::ShutdownCommand) {
+        if let Err(error) = client
+            .subscribe(topics.shutdown_command.clone(), QoS::AtLeastOnce)
+            .await
+        {
+            error!(
+                %error,
+                topic = %topics.shutdown_command,
+                "failed to subscribe shutdown command topic"
+            );
+        } else {
+            subscription_state.mark_request_queued(SubscriptionTarget::ShutdownCommand);
+        }
+    }
+}
+
+async fn publish_online_availability_if_needed(
+    client: &AsyncClient,
+    topics: &Topics,
+    availability_online_pending: &mut bool,
+) {
+    if !*availability_online_pending {
+        return;
+    }
+
+    if let Err(error) = publish_availability(client, topics, true).await {
+        error!(%error, "failed to publish online availability");
+    } else {
+        *availability_online_pending = false;
+    }
+}
+
+async fn refresh_discovery_layout(
+    context: &PublishContext<'_>,
+    gpu_state: Option<&GpuState>,
+    disk_state: &DiskState,
+    discovery_state: &mut DiscoveryState,
+    force: bool,
+) {
+    let next_layout = DiscoveryLayout::from_states(gpu_state, disk_state);
+    if !force && discovery_state.last_layout.as_ref() == Some(&next_layout) {
+        return;
+    }
+
+    if let Err(error) = publish_discovery_if_needed(
+        context.client,
+        DiscoveryPublishArgs {
+            config: context.config,
+            identity: context.identity,
+            topics: context.topics,
+            gpu_state,
+            disk_state,
+        },
+        &mut discovery_state.last_payload,
+        force,
+    )
+    .await
+    {
+        error!(%error, "failed to publish discovery payload");
+        discovery_state.last_payload = None;
+        discovery_state.last_layout = None;
+    } else {
+        discovery_state.last_layout = Some(next_layout);
+    }
+}
+
+async fn publish_full_snapshot(
+    context: &PublishContext<'_>,
+    snapshot: FullSnapshot,
+    discovery_state: &mut DiscoveryState,
+    published_states: &mut PublishedStates,
+    availability_online_pending: &mut bool,
+    force_discovery: bool,
+) {
+    let FullSnapshot {
+        cpu_state,
+        uptime_state,
+        gpu_state,
+        memory_state,
+        disk_state,
+    } = snapshot;
+
+    publish_online_availability_if_needed(
+        context.client,
+        context.topics,
+        availability_online_pending,
+    )
+    .await;
+    refresh_discovery_layout(
+        context,
+        gpu_state.as_ref(),
+        &disk_state,
+        discovery_state,
+        force_discovery,
+    )
+    .await;
+
+    if let Err(error) = publish_cpu_state(context.client, context.topics, &cpu_state).await {
+        error!(%error, "failed to publish CPU state");
+        published_states.cpu.clear();
+    } else {
+        published_states.cpu.mark_published(cpu_state);
+    }
+
+    if let Err(error) = publish_uptime_state(context.client, context.topics, &uptime_state).await {
+        error!(%error, "failed to publish uptime state");
+        published_states.uptime.clear();
+    } else {
+        published_states.uptime.mark_published(uptime_state);
+    }
+
+    if let Some(gpu_state) = gpu_state {
+        if let Err(error) = publish_gpu_state(context.client, context.topics, &gpu_state).await {
+            error!(%error, "failed to publish GPU state");
+            published_states.gpu.clear();
+        } else {
+            published_states.gpu.mark_published(gpu_state);
+        }
+    } else {
+        published_states.gpu.clear();
+    }
+
+    if let Err(error) = publish_memory_state(context.client, context.topics, &memory_state).await {
+        error!(%error, "failed to publish memory state");
+        published_states.memory.clear();
+    } else {
+        published_states.memory.mark_published(memory_state);
+    }
+
+    if let Err(error) = publish_disk_state(context.client, context.topics, &disk_state).await {
+        error!(%error, "failed to publish disk state");
+        published_states.disk.clear();
+    } else {
+        published_states.disk.mark_published(disk_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SUBSCRIPTION_RETRY_INTERVAL, SubscriptionState, SubscriptionTarget};
+    use std::time::Instant;
+
+    #[test]
+    fn subscription_state_tracks_successful_suback() {
+        let mut state = SubscriptionState::default();
+        state.prepare_for_connection(false);
+
+        assert!(state.should_request(SubscriptionTarget::HomeAssistantStatus));
+
+        state.mark_request_queued(SubscriptionTarget::HomeAssistantStatus);
+        state.mark_request_sent(7);
+        state.handle_suback(7, true);
+
+        assert!(!state.should_request(SubscriptionTarget::HomeAssistantStatus));
+        assert!(state.ha_status.subscribed);
+    }
+
+    #[test]
+    fn subscription_state_retries_after_failed_suback_backoff() {
+        let mut state = SubscriptionState::default();
+        state.prepare_for_connection(false);
+
+        state.mark_request_queued(SubscriptionTarget::HomeAssistantStatus);
+        state.mark_request_sent(9);
+        state.handle_suback(9, false);
+
+        assert!(!state.should_request(SubscriptionTarget::HomeAssistantStatus));
+
+        state.ha_status.last_request_at = Some(Instant::now() - SUBSCRIPTION_RETRY_INTERVAL);
+        assert!(state.should_request(SubscriptionTarget::HomeAssistantStatus));
+    }
 }

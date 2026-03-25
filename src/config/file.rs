@@ -1,15 +1,17 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::shared::util::{files_match, same_path};
+
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const CONFIG_EXAMPLE_FILE_NAME: &str = "config.example.toml";
 const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../../config.example.toml");
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileConfig {
     #[serde(default, skip_serializing_if = "MqttConfig::is_empty")]
     pub mqtt: MqttConfig,
@@ -26,6 +28,7 @@ pub struct FileConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MqttConfig {
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -34,6 +37,7 @@ pub struct MqttConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HomeAssistantConfig {
     pub discovery_prefix: Option<String>,
     pub status_topic: Option<String>,
@@ -41,37 +45,35 @@ pub struct HomeAssistantConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub node_id: Option<String>,
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingConfig {
-    #[serde(default, skip_serializing_if = "CpuSamplingConfig::is_empty")]
-    pub cpu: CpuSamplingConfig,
+    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
+    pub cpu: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub gpu: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub memory: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
+    pub uptime: MetricSamplingConfig,
+    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub disk: MetricSamplingConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CpuSamplingConfig {
-    pub interval_secs: Option<u64>,
-    pub smoothing_window: Option<usize>,
-    pub max_silence_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricSamplingConfig {
     pub interval_secs: Option<u64>,
-    pub max_silence_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThresholdsConfig {
     #[serde(default, skip_serializing_if = "CpuThresholdConfig::is_empty")]
     pub cpu: CpuThresholdConfig,
@@ -84,22 +86,26 @@ pub struct ThresholdsConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuThresholdConfig {
     pub usage_pct: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GpuThresholdConfig {
     pub usage_pct: Option<f32>,
     pub memory_change_mib: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricThresholdConfig {
     pub change_mib: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShutdownConfig {
     pub enable_button: Option<bool>,
     pub payload: Option<String>,
@@ -113,37 +119,23 @@ impl FileConfig {
         toml::from_str(&content)
             .with_context(|| format!("parsing TOML config `{}`", path.display()))
     }
-
-    pub fn apply_env_defaults(&self) {
-        self.mqtt.set_defaults();
-        self.home_assistant.set_defaults();
-        self.device.set_defaults();
-        self.sampling.set_defaults();
-        self.thresholds.set_defaults();
-        self.shutdown.set_defaults();
-    }
 }
 
-pub fn load_config_file_from(directories: &[PathBuf]) -> Result<Option<PathBuf>> {
+pub fn load_config_file_from(directories: &[PathBuf]) -> Result<Option<FileConfig>> {
     for directory in directories {
         let path = directory.join(CONFIG_FILE_NAME);
         if path.is_file() {
-            let config = FileConfig::load_from_path(&path)?;
-            config.apply_env_defaults();
-            return Ok(Some(path));
+            return Ok(Some(FileConfig::load_from_path(&path)?));
         }
     }
 
     Ok(None)
 }
 
-pub fn seed_config_toml(
-    config_dir: &Path,
-    source_directories: &[PathBuf],
-) -> Result<Option<PathBuf>> {
+pub fn seed_config_toml(config_dir: &Path, source_directories: &[PathBuf]) -> Result<PathBuf> {
     let config_path = config_dir.join(CONFIG_FILE_NAME);
     if config_path.is_file() {
-        return Ok(Some(config_path));
+        return Ok(config_path);
     }
 
     if let Some(source_toml) = find_file(source_directories, CONFIG_FILE_NAME) {
@@ -154,7 +146,7 @@ pub fn seed_config_toml(
                 config_path.display()
             )
         })?;
-        return Ok(Some(config_path));
+        return Ok(config_path);
     }
 
     if let Some(example_toml) = find_file(source_directories, CONFIG_EXAMPLE_FILE_NAME) {
@@ -165,7 +157,7 @@ pub fn seed_config_toml(
                 config_path.display()
             )
         })?;
-        return Ok(Some(config_path));
+        return Ok(config_path);
     }
 
     fs::write(&config_path, DEFAULT_CONFIG_TEMPLATE).with_context(|| {
@@ -174,7 +166,7 @@ pub fn seed_config_toml(
             config_path.display()
         )
     })?;
-    Ok(Some(config_path))
+    Ok(config_path)
 }
 
 fn find_file(directories: &[PathBuf], file_name: &str) -> Option<PathBuf> {
@@ -204,70 +196,12 @@ fn copy_file_if_needed(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-fn files_match(source: &Path, destination: &Path) -> Result<bool> {
-    let source_metadata = fs::metadata(source)
-        .with_context(|| format!("reading metadata for `{}`", source.display()))?;
-    let destination_metadata = fs::metadata(destination)
-        .with_context(|| format!("reading metadata for `{}`", destination.display()))?;
-
-    if source_metadata.len() != destination_metadata.len() {
-        return Ok(false);
-    }
-
-    Ok(
-        fs::read(source).with_context(|| format!("reading `{}`", source.display()))?
-            == fs::read(destination)
-                .with_context(|| format!("reading `{}`", destination.display()))?,
-    )
-}
-
-fn same_path(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
-}
-
-fn set_env_if_absent(key: &str, value: impl ToString) {
-    if env::var_os(key).is_some() {
-        return;
-    }
-
-    unsafe {
-        env::set_var(key, value.to_string());
-    }
-}
-
-fn set_optional<T>(key: &str, value: Option<T>)
-where
-    T: ToString + Copy,
-{
-    if let Some(value) = value {
-        set_env_if_absent(key, value);
-    }
-}
-
 impl MqttConfig {
     fn is_empty(&self) -> bool {
         self.host.is_none()
             && self.port.is_none()
             && self.username.is_none()
             && self.password.is_none()
-    }
-
-    fn set_defaults(&self) {
-        if let Some(value) = &self.host {
-            set_env_if_absent("HA_MONITOR_MQTT_HOST", value);
-        }
-        if let Some(value) = self.port {
-            set_env_if_absent("HA_MONITOR_MQTT_PORT", value);
-        }
-        if let Some(value) = &self.username {
-            set_env_if_absent("HA_MONITOR_MQTT_USERNAME", value);
-        }
-        if let Some(value) = &self.password {
-            set_env_if_absent("HA_MONITOR_MQTT_PASSWORD", value);
-        }
     }
 }
 
@@ -277,93 +211,33 @@ impl HomeAssistantConfig {
             && self.status_topic.is_none()
             && self.topic_prefix.is_none()
     }
-
-    fn set_defaults(&self) {
-        if let Some(value) = &self.discovery_prefix {
-            set_env_if_absent("HA_MONITOR_DISCOVERY_PREFIX", value);
-        }
-        if let Some(value) = &self.status_topic {
-            set_env_if_absent("HA_MONITOR_HOME_ASSISTANT_STATUS_TOPIC", value);
-        }
-        if let Some(value) = &self.topic_prefix {
-            set_env_if_absent("HA_MONITOR_TOPIC_PREFIX", value);
-        }
-    }
 }
 
 impl DeviceConfig {
     fn is_empty(&self) -> bool {
         self.node_id.is_none() && self.name.is_none()
     }
-
-    fn set_defaults(&self) {
-        if let Some(value) = &self.node_id {
-            set_env_if_absent("HA_MONITOR_NODE_ID", value);
-        }
-        if let Some(value) = &self.name {
-            set_env_if_absent("HA_MONITOR_DEVICE_NAME", value);
-        }
-    }
 }
 
 impl SamplingConfig {
     fn is_empty(&self) -> bool {
-        self.cpu.is_empty() && self.gpu.is_empty() && self.memory.is_empty() && self.disk.is_empty()
-    }
-
-    fn set_defaults(&self) {
-        set_optional("HA_MONITOR_CPU_INTERVAL_SECS", self.cpu.interval_secs);
-        set_optional("HA_MONITOR_GPU_INTERVAL_SECS", self.gpu.interval_secs);
-        set_optional("HA_MONITOR_MEMORY_INTERVAL_SECS", self.memory.interval_secs);
-        set_optional("HA_MONITOR_DISK_INTERVAL_SECS", self.disk.interval_secs);
-        set_optional("HA_MONITOR_CPU_SMOOTHING_WINDOW", self.cpu.smoothing_window);
-        set_optional("HA_MONITOR_CPU_MAX_SILENCE_SECS", self.cpu.max_silence_secs);
-        set_optional("HA_MONITOR_GPU_MAX_SILENCE_SECS", self.gpu.max_silence_secs);
-        set_optional(
-            "HA_MONITOR_MEMORY_MAX_SILENCE_SECS",
-            self.memory.max_silence_secs,
-        );
-        set_optional(
-            "HA_MONITOR_DISK_MAX_SILENCE_SECS",
-            self.disk.max_silence_secs,
-        );
-    }
-}
-
-impl CpuSamplingConfig {
-    fn is_empty(&self) -> bool {
-        self.interval_secs.is_none()
-            && self.smoothing_window.is_none()
-            && self.max_silence_secs.is_none()
+        self.cpu.is_empty()
+            && self.gpu.is_empty()
+            && self.memory.is_empty()
+            && self.uptime.is_empty()
+            && self.disk.is_empty()
     }
 }
 
 impl MetricSamplingConfig {
     fn is_empty(&self) -> bool {
-        self.interval_secs.is_none() && self.max_silence_secs.is_none()
+        self.interval_secs.is_none()
     }
 }
 
 impl ThresholdsConfig {
     fn is_empty(&self) -> bool {
         self.cpu.is_empty() && self.gpu.is_empty() && self.memory.is_empty() && self.disk.is_empty()
-    }
-
-    fn set_defaults(&self) {
-        set_optional("HA_MONITOR_CPU_CHANGE_THRESHOLD_PCT", self.cpu.usage_pct);
-        set_optional(
-            "HA_MONITOR_GPU_USAGE_CHANGE_THRESHOLD_PCT",
-            self.gpu.usage_pct,
-        );
-        set_optional(
-            "HA_MONITOR_GPU_MEMORY_CHANGE_THRESHOLD_MIB",
-            self.gpu.memory_change_mib,
-        );
-        set_optional(
-            "HA_MONITOR_MEMORY_CHANGE_THRESHOLD_MIB",
-            self.memory.change_mib,
-        );
-        set_optional("HA_MONITOR_DISK_CHANGE_THRESHOLD_MIB", self.disk.change_mib);
     }
 }
 
@@ -389,12 +263,23 @@ impl ShutdownConfig {
     fn is_empty(&self) -> bool {
         self.enable_button.is_none() && self.payload.is_none() && self.dry_run.is_none()
     }
+}
 
-    fn set_defaults(&self) {
-        set_optional("HA_MONITOR_ENABLE_SHUTDOWN_BUTTON", self.enable_button);
-        if let Some(value) = &self.payload {
-            set_env_if_absent("HA_MONITOR_SHUTDOWN_PAYLOAD", value);
-        }
-        set_optional("HA_MONITOR_SHUTDOWN_DRY_RUN", self.dry_run);
+#[cfg(test)]
+mod tests {
+    use super::FileConfig;
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let error = toml::from_str::<FileConfig>(
+            r#"
+            [mqtt]
+            host = "10.0.0.1"
+            typo_field = true
+            "#,
+        )
+        .expect_err("unknown fields should be rejected");
+
+        assert!(error.to_string().contains("unknown field"));
     }
 }

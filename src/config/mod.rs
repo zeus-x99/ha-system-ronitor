@@ -2,187 +2,113 @@ mod bootstrap;
 mod file;
 mod paths;
 
-use clap::Parser;
 use std::path::PathBuf;
+
+use anyhow::{Result, anyhow};
 
 pub use bootstrap::BootstrapOptions;
 pub use file::{
-    CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, load_config_file_from, seed_config_toml,
+    CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuThresholdConfig, DeviceConfig, FileConfig,
+    GpuThresholdConfig, HomeAssistantConfig, MetricSamplingConfig, MetricThresholdConfig,
+    MqttConfig, SamplingConfig, ShutdownConfig, ThresholdsConfig, load_config_file_from,
+    seed_config_toml,
 };
 pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
-#[derive(Debug, Parser, Clone)]
-#[command(
-    author,
-    version,
-    about = "Cross-platform system monitor for Home Assistant"
-)]
+#[derive(Debug, Clone)]
 pub struct Config {
-    #[arg(long, env = "HA_MONITOR_CONFIG_DIR", hide = true)]
     pub config_dir: Option<PathBuf>,
-
-    #[arg(long, env = "HA_MONITOR_LOG_DIR", hide = true)]
     pub log_dir: Option<PathBuf>,
-
-    #[arg(long, env = "HA_MONITOR_MQTT_HOST")]
     pub mqtt_host: String,
-
-    #[arg(long, env = "HA_MONITOR_MQTT_PORT", default_value_t = 1883)]
     pub mqtt_port: u16,
-
-    #[arg(long, env = "HA_MONITOR_MQTT_USERNAME")]
     pub mqtt_username: Option<String>,
-
-    #[arg(long, env = "HA_MONITOR_MQTT_PASSWORD")]
     pub mqtt_password: Option<String>,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_DISCOVERY_PREFIX",
-        default_value = "homeassistant"
-    )]
     pub discovery_prefix: String,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_HOME_ASSISTANT_STATUS_TOPIC",
-        default_value = "homeassistant/status"
-    )]
     pub home_assistant_status_topic: String,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_TOPIC_PREFIX",
-        default_value = "monitor/system"
-    )]
     pub topic_prefix: String,
-
-    #[arg(long, env = "HA_MONITOR_NODE_ID")]
     pub node_id: Option<String>,
-
-    #[arg(long, env = "HA_MONITOR_DEVICE_NAME")]
     pub device_name: Option<String>,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_ENABLE_SHUTDOWN_BUTTON",
-        default_value_t = false
-    )]
     pub enable_shutdown_button: bool,
-
-    #[arg(long, env = "HA_MONITOR_SHUTDOWN_PAYLOAD", default_value = "shutdown")]
     pub shutdown_payload: String,
-
-    #[arg(long, env = "HA_MONITOR_SHUTDOWN_DRY_RUN", default_value_t = false)]
     pub shutdown_dry_run: bool,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_CPU_INTERVAL_SECS",
-        default_value_t = 1,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub cpu_interval_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_GPU_INTERVAL_SECS",
-        default_value_t = 1,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub gpu_interval_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_MEMORY_INTERVAL_SECS",
-        default_value_t = 5,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub memory_interval_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_DISK_INTERVAL_SECS",
-        default_value_t = 30,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
+    pub uptime_interval_secs: u64,
     pub disk_interval_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_CPU_CHANGE_THRESHOLD_PCT",
-        default_value_t = 1.0
-    )]
     pub cpu_change_threshold_pct: f32,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_GPU_USAGE_CHANGE_THRESHOLD_PCT",
-        default_value_t = 1.0
-    )]
     pub gpu_usage_change_threshold_pct: f32,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_GPU_MEMORY_CHANGE_THRESHOLD_MIB",
-        default_value_t = 8,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub gpu_memory_change_threshold_mib: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_MEMORY_CHANGE_THRESHOLD_MIB",
-        default_value_t = 8,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub memory_change_threshold_mib: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_DISK_CHANGE_THRESHOLD_MIB",
-        default_value_t = 32,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
     pub disk_change_threshold_mib: u64,
+}
 
-    #[arg(long, env = "HA_MONITOR_CPU_SMOOTHING_WINDOW", default_value_t = 5)]
-    pub cpu_smoothing_window: usize,
+pub fn load_config(bootstrap: &BootstrapOptions) -> Result<Config> {
+    let config_directories = bootstrap.config_directories();
+    let file_config = load_config_file_from(&config_directories)?.ok_or_else(|| {
+        let searched = config_directories
+            .iter()
+            .map(|path| format!("`{}`", path.join(CONFIG_FILE_NAME).display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow!(
+            "missing required configuration file `{}`; searched: {}",
+            CONFIG_FILE_NAME,
+            searched
+        )
+    })?;
 
-    #[arg(
-        long,
-        env = "HA_MONITOR_CPU_MAX_SILENCE_SECS",
-        default_value_t = 30,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    pub cpu_max_silence_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_GPU_MAX_SILENCE_SECS",
-        default_value_t = 30,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    pub gpu_max_silence_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_MEMORY_MAX_SILENCE_SECS",
-        default_value_t = 120,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    pub memory_max_silence_secs: u64,
-
-    #[arg(
-        long,
-        env = "HA_MONITOR_DISK_MAX_SILENCE_SECS",
-        default_value_t = 900,
-        value_parser = clap::value_parser!(u64).range(1..)
-    )]
-    pub disk_max_silence_secs: u64,
+    Config::from_file(bootstrap, file_config)
 }
 
 impl Config {
+    fn from_file(bootstrap: &BootstrapOptions, file_config: FileConfig) -> Result<Self> {
+        let FileConfig {
+            mqtt,
+            home_assistant,
+            device,
+            sampling,
+            thresholds,
+            shutdown,
+        } = file_config;
+
+        Ok(Self {
+            config_dir: bootstrap.config_dir.clone(),
+            log_dir: bootstrap.log_dir.clone(),
+            mqtt_host: required_value(mqtt.host, "mqtt.host")?,
+            mqtt_port: value_or_default(mqtt.port, 1883),
+            mqtt_username: mqtt.username,
+            mqtt_password: mqtt.password,
+            discovery_prefix: value_or_default(
+                home_assistant.discovery_prefix,
+                "homeassistant".to_string(),
+            ),
+            home_assistant_status_topic: value_or_default(
+                home_assistant.status_topic,
+                "homeassistant/status".to_string(),
+            ),
+            topic_prefix: value_or_default(
+                home_assistant.topic_prefix,
+                "monitor/system".to_string(),
+            ),
+            node_id: device.node_id,
+            device_name: device.name,
+            enable_shutdown_button: value_or_default(shutdown.enable_button, false),
+            shutdown_payload: value_or_default(shutdown.payload, "shutdown".to_string()),
+            shutdown_dry_run: value_or_default(shutdown.dry_run, false),
+            cpu_interval_secs: value_or_default(sampling.cpu.interval_secs, 1),
+            gpu_interval_secs: value_or_default(sampling.gpu.interval_secs, 1),
+            memory_interval_secs: value_or_default(sampling.memory.interval_secs, 5),
+            uptime_interval_secs: value_or_default(sampling.uptime.interval_secs, 300),
+            disk_interval_secs: value_or_default(sampling.disk.interval_secs, 30),
+            cpu_change_threshold_pct: value_or_default(thresholds.cpu.usage_pct, 1.0),
+            gpu_usage_change_threshold_pct: value_or_default(thresholds.gpu.usage_pct, 1.0),
+            gpu_memory_change_threshold_mib: value_or_default(thresholds.gpu.memory_change_mib, 8),
+            memory_change_threshold_mib: value_or_default(thresholds.memory.change_mib, 8),
+            disk_change_threshold_mib: value_or_default(thresholds.disk.change_mib, 32),
+        })
+    }
+
     pub fn gpu_memory_change_threshold_bytes(&self) -> u64 {
         self.gpu_memory_change_threshold_mib * 1024 * 1024
     }
@@ -193,5 +119,153 @@ impl Config {
 
     pub fn disk_change_threshold_bytes(&self) -> u64 {
         self.disk_change_threshold_mib * 1024 * 1024
+    }
+}
+
+fn required_value<T>(value: Option<T>, key: &str) -> Result<T> {
+    value.ok_or_else(|| {
+        anyhow!("missing required configuration value `{key}` in `{CONFIG_FILE_NAME}`")
+    })
+}
+
+fn value_or_default<T>(value: Option<T>, default: T) -> T {
+    value.unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_config_values_are_used_and_defaults_are_preserved() {
+        let file_config = FileConfig {
+            mqtt: MqttConfig {
+                host: Some("10.0.0.10".to_string()),
+                port: Some(2883),
+                username: Some("user".to_string()),
+                password: Some("pass".to_string()),
+            },
+            home_assistant: HomeAssistantConfig {
+                discovery_prefix: Some("ha".to_string()),
+                status_topic: Some("ha/status".to_string()),
+                topic_prefix: Some("custom/monitor".to_string()),
+            },
+            device: DeviceConfig {
+                node_id: Some("node-a".to_string()),
+                name: Some("Node A".to_string()),
+            },
+            sampling: SamplingConfig {
+                cpu: MetricSamplingConfig {
+                    interval_secs: Some(2),
+                },
+                gpu: MetricSamplingConfig {
+                    interval_secs: Some(3),
+                },
+                memory: MetricSamplingConfig {
+                    interval_secs: Some(7),
+                },
+                uptime: MetricSamplingConfig {
+                    interval_secs: Some(600),
+                },
+                disk: MetricSamplingConfig {
+                    interval_secs: Some(45),
+                },
+            },
+            thresholds: ThresholdsConfig {
+                cpu: CpuThresholdConfig {
+                    usage_pct: Some(2.5),
+                },
+                gpu: GpuThresholdConfig {
+                    usage_pct: Some(3.5),
+                    memory_change_mib: Some(16),
+                },
+                memory: MetricThresholdConfig {
+                    change_mib: Some(12),
+                },
+                disk: MetricThresholdConfig {
+                    change_mib: Some(64),
+                },
+            },
+            shutdown: ShutdownConfig {
+                enable_button: Some(true),
+                payload: Some("poweroff".to_string()),
+                dry_run: Some(true),
+            },
+        };
+
+        let config = Config::from_file(
+            &BootstrapOptions {
+                config_dir: Some(PathBuf::from("C:/cfg")),
+                log_dir: Some(PathBuf::from("C:/logs")),
+            },
+            file_config,
+        )
+        .expect("config should load");
+
+        assert_eq!(config.config_dir, Some(PathBuf::from("C:/cfg")));
+        assert_eq!(config.log_dir, Some(PathBuf::from("C:/logs")));
+        assert_eq!(config.mqtt_host, "10.0.0.10");
+        assert_eq!(config.mqtt_port, 2883);
+        assert_eq!(config.discovery_prefix, "ha");
+        assert_eq!(config.topic_prefix, "custom/monitor");
+        assert_eq!(config.node_id.as_deref(), Some("node-a"));
+        assert_eq!(config.cpu_interval_secs, 2);
+        assert_eq!(config.gpu_interval_secs, 3);
+        assert_eq!(config.memory_interval_secs, 7);
+        assert_eq!(config.uptime_interval_secs, 600);
+        assert_eq!(config.disk_interval_secs, 45);
+        assert_eq!(config.cpu_change_threshold_pct, 2.5);
+        assert_eq!(config.gpu_usage_change_threshold_pct, 3.5);
+        assert_eq!(config.gpu_memory_change_threshold_mib, 16);
+        assert_eq!(config.memory_change_threshold_mib, 12);
+        assert_eq!(config.disk_change_threshold_mib, 64);
+        assert!(config.enable_shutdown_button);
+        assert_eq!(config.shutdown_payload, "poweroff");
+        assert!(config.shutdown_dry_run);
+    }
+
+    #[test]
+    fn optional_values_fall_back_to_defaults() {
+        let config = Config::from_file(
+            &BootstrapOptions::default(),
+            FileConfig {
+                mqtt: MqttConfig {
+                    host: Some("10.0.0.10".to_string()),
+                    ..MqttConfig::default()
+                },
+                ..FileConfig::default()
+            },
+        )
+        .expect("config should load");
+
+        assert_eq!(config.mqtt_port, 1883);
+        assert_eq!(config.discovery_prefix, "homeassistant");
+        assert_eq!(config.home_assistant_status_topic, "homeassistant/status");
+        assert_eq!(config.topic_prefix, "monitor/system");
+        assert_eq!(config.cpu_interval_secs, 1);
+        assert_eq!(config.gpu_interval_secs, 1);
+        assert_eq!(config.memory_interval_secs, 5);
+        assert_eq!(config.uptime_interval_secs, 300);
+        assert_eq!(config.disk_interval_secs, 30);
+        assert_eq!(config.cpu_change_threshold_pct, 1.0);
+        assert_eq!(config.gpu_usage_change_threshold_pct, 1.0);
+        assert_eq!(config.gpu_memory_change_threshold_mib, 8);
+        assert_eq!(config.memory_change_threshold_mib, 8);
+        assert_eq!(config.disk_change_threshold_mib, 32);
+        assert!(!config.enable_shutdown_button);
+        assert_eq!(config.shutdown_payload, "shutdown");
+        assert!(!config.shutdown_dry_run);
+    }
+
+    #[test]
+    fn missing_mqtt_host_is_rejected() {
+        let error =
+            Config::from_file(&BootstrapOptions::default(), FileConfig::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required configuration value `mqtt.host`")
+        );
     }
 }
