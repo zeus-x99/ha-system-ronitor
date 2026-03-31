@@ -297,6 +297,23 @@ fn build_components(
         .with_icon("mdi:timer-outline"),
     );
 
+    if config.enable_shutdown_button && config.shutdown_delay_secs > 0 {
+        components.insert(
+            "shutdown_remaining_secs".to_string(),
+            Component::sensor(
+                identity,
+                "shutdown_remaining_secs",
+                "Shutdown Remaining",
+                topics.shutdown_state.clone(),
+                "{{ value_json.shutdown_remaining_secs }}",
+            )
+            .with_unit("s")
+            .with_device_class("duration")
+            .with_state_class("measurement")
+            .with_icon("mdi:timer-sand"),
+        );
+    }
+
     if let Some(gpu_info) = gpu_info {
         components.insert(
             "gpu_name".to_string(),

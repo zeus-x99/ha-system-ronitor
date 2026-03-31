@@ -26,6 +26,11 @@ pub struct UptimeState {
     pub uptime: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ShutdownState {
+    pub shutdown_remaining_secs: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GpuState {
     pub timestamp: String,

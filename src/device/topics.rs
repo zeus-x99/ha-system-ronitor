@@ -9,6 +9,7 @@ pub struct Topics {
     pub cpu_state: String,
     pub cpu_info_state: String,
     pub uptime_state: String,
+    pub shutdown_state: String,
     pub gpu_state: String,
     pub gpu_info_state: String,
     pub memory_state: String,
@@ -42,6 +43,10 @@ impl Topics {
             cpu_state: format!("{}/{}/cpu/state", config.topic_prefix, identity.node_id),
             cpu_info_state: format!("{}/{}/cpu/info", config.topic_prefix, identity.node_id),
             uptime_state: format!("{}/{}/uptime/state", config.topic_prefix, identity.node_id),
+            shutdown_state: format!(
+                "{}/{}/shutdown/state",
+                config.topic_prefix, identity.node_id
+            ),
             gpu_state: format!("{}/{}/gpu/state", config.topic_prefix, identity.node_id),
             gpu_info_state: format!("{}/{}/gpu/info", config.topic_prefix, identity.node_id),
             memory_state: format!("{}/{}/memory/state", config.topic_prefix, identity.node_id),

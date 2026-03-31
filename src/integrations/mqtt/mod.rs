@@ -8,7 +8,7 @@ use crate::device::{Identity, Topics};
 use crate::integrations::home_assistant::discovery::build_device_discovery_message;
 use crate::system::models::{
     CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
-    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, UptimeState,
+    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState, UptimeState,
 };
 
 const MQTT_MAX_PACKET_SIZE: usize = 64 * 1024;
@@ -181,6 +181,21 @@ pub async fn publish_uptime_state(
         state,
         false,
         "uptime state payload",
+    )
+    .await
+}
+
+pub async fn publish_shutdown_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &ShutdownState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.shutdown_state,
+        state,
+        false,
+        "shutdown state payload",
     )
     .await
 }

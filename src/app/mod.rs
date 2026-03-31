@@ -23,13 +23,14 @@ use crate::integrations::mqtt::{
     is_home_assistant_birth_message, publish_availability, publish_cpu_info_state,
     publish_cpu_state, publish_discovery_if_needed, publish_disk_info_state, publish_disk_state,
     publish_gpu_info_state, publish_gpu_state, publish_host_info_state, publish_memory_info_state,
-    publish_memory_state, publish_network_info_state, publish_network_state, publish_uptime_state,
+    publish_memory_state, publish_network_info_state, publish_network_state,
+    publish_shutdown_state, publish_uptime_state,
 };
 use crate::shared::util::slugify;
 use crate::system::collector::Collector;
 use crate::system::models::{
     CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
-    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, UptimeState,
+    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState, UptimeState,
 };
 use crate::system::power::shutdown_host;
 
@@ -48,6 +49,7 @@ struct PublishContext<'a> {
 struct FullSnapshot {
     cpu_state: CpuState,
     uptime_state: UptimeState,
+    shutdown_state: ShutdownState,
     gpu_state: Option<GpuState>,
     memory_state: MemoryState,
     disk_state: DiskState,
@@ -72,6 +74,7 @@ enum ShutdownCommandKind {
 #[derive(Debug)]
 struct PendingShutdown {
     request_id: u64,
+    deadline: Instant,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -149,6 +152,7 @@ struct PublishedSlot<T> {
 struct PublishedStates {
     cpu: PublishedSlot<CpuState>,
     uptime: PublishedSlot<UptimeState>,
+    shutdown: PublishedSlot<ShutdownState>,
     gpu: PublishedSlot<GpuState>,
     memory: PublishedSlot<MemoryState>,
     disk: PublishedSlot<DiskState>,
@@ -385,6 +389,9 @@ where
         tokio::time::interval(Duration::from_secs(config.uptime_interval_secs));
     uptime_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    let mut shutdown_interval = tokio::time::interval(Duration::from_secs(1));
+    shutdown_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut disk_interval = tokio::time::interval(Duration::from_secs(config.disk_interval_secs));
     disk_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -479,6 +486,7 @@ where
                             FullSnapshot {
                                 cpu_state,
                                 uptime_state,
+                                shutdown_state: current_shutdown_state(pending_shutdown.as_ref()),
                                 gpu_state,
                                 memory_state,
                                 disk_state,
@@ -565,6 +573,7 @@ where
                             FullSnapshot {
                                 cpu_state,
                                 uptime_state,
+                                shutdown_state: current_shutdown_state(pending_shutdown.as_ref()),
                                 gpu_state,
                                 memory_state,
                                 disk_state,
@@ -656,6 +665,35 @@ where
                     published_states.uptime.clear();
                 } else {
                     published_states.uptime.mark_published(uptime_state);
+                }
+            }
+            _ = shutdown_interval.tick() => {
+                if !connected || !config.enable_shutdown_button || config.shutdown_delay_secs == 0 {
+                    continue;
+                }
+
+                let shutdown_state = current_shutdown_state(pending_shutdown.as_ref());
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                let changed = published_states
+                    .shutdown
+                    .state
+                    .as_ref()
+                    .is_none_or(|previous| shutdown_state != *previous);
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+                if !changed {
+                    continue;
+                }
+
+                if let Err(error) = publish_shutdown_state(&client, &topics, &shutdown_state).await {
+                    error!(%error, "failed to publish shutdown state");
+                    published_states.shutdown.clear();
+                } else {
+                    published_states.shutdown.mark_published(shutdown_state);
                 }
             }
             _ = gpu_interval.tick() => {
@@ -1108,6 +1146,7 @@ fn schedule_shutdown(
     let replaced = cancel_pending_shutdown(pending_shutdown);
     *next_request_id = next_request_id.wrapping_add(1);
     let request_id = *next_request_id;
+    let deadline = Instant::now() + Duration::from_secs(delay_secs);
     let elapsed_tx = elapsed_tx.clone();
     let task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(delay_secs)).await;
@@ -1117,7 +1156,11 @@ fn schedule_shutdown(
         });
     });
 
-    *pending_shutdown = Some(PendingShutdown { request_id, task });
+    *pending_shutdown = Some(PendingShutdown {
+        request_id,
+        deadline,
+        task,
+    });
     replaced
 }
 
@@ -1128,6 +1171,24 @@ fn cancel_pending_shutdown(pending_shutdown: &mut Option<PendingShutdown>) -> bo
 
     pending_shutdown.task.abort();
     true
+}
+
+fn current_shutdown_state(pending_shutdown: Option<&PendingShutdown>) -> ShutdownState {
+    ShutdownState {
+        shutdown_remaining_secs: pending_shutdown.map(remaining_shutdown_secs).unwrap_or(0),
+    }
+}
+
+fn remaining_shutdown_secs(pending_shutdown: &PendingShutdown) -> u64 {
+    let remaining = pending_shutdown
+        .deadline
+        .saturating_duration_since(Instant::now());
+    let secs = remaining.as_secs();
+    if remaining.subsec_nanos() == 0 {
+        secs
+    } else {
+        secs.saturating_add(1)
+    }
 }
 
 fn init_tracing(bootstrap: &BootstrapOptions) -> Result<()> {
@@ -1233,6 +1294,7 @@ async fn publish_full_snapshot(
     let FullSnapshot {
         cpu_state,
         uptime_state,
+        shutdown_state,
         gpu_state,
         memory_state,
         disk_state,
@@ -1277,6 +1339,19 @@ async fn publish_full_snapshot(
         published_states.uptime.clear();
     } else {
         published_states.uptime.mark_published(uptime_state);
+    }
+
+    if context.config.enable_shutdown_button && context.config.shutdown_delay_secs > 0 {
+        if let Err(error) =
+            publish_shutdown_state(context.client, context.topics, &shutdown_state).await
+        {
+            error!(%error, "failed to publish shutdown state");
+            published_states.shutdown.clear();
+        } else {
+            published_states.shutdown.mark_published(shutdown_state);
+        }
+    } else {
+        published_states.shutdown.clear();
     }
 
     if let Some(gpu_state) = gpu_state {
