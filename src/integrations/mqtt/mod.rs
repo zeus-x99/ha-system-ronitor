@@ -194,7 +194,7 @@ pub async fn publish_shutdown_state(
         client,
         &topics.shutdown_state,
         state,
-        false,
+        true,
         "shutdown state payload",
     )
     .await

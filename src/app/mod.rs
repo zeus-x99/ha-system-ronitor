@@ -424,6 +424,14 @@ where
                 }
 
                 pending_shutdown = None;
+                sync_shutdown_state(
+                    &client,
+                    &topics,
+                    &config,
+                    pending_shutdown.as_ref(),
+                    &mut published_states,
+                )
+                .await;
                 warn!(
                     delay_secs = elapsed.delay_secs,
                     "scheduled shutdown delay elapsed, executing shutdown"
@@ -437,6 +445,16 @@ where
                 error!(%reason, node_id = %identity.node_id, "node lock lost, stopping service");
                 if cancel_pending_shutdown(&mut pending_shutdown) {
                     info!("cleared pending shutdown because node lock was lost");
+                    if connected {
+                        sync_shutdown_state(
+                            &client,
+                            &topics,
+                            &config,
+                            pending_shutdown.as_ref(),
+                            &mut published_states,
+                        )
+                        .await;
+                    }
                 }
                 if connected {
                     publish_availability(&client, &topics, false).await?;
@@ -449,6 +467,16 @@ where
                 info!("shutdown signal received");
                 if cancel_pending_shutdown(&mut pending_shutdown) {
                     info!("cleared pending shutdown because service is stopping");
+                    if connected {
+                        sync_shutdown_state(
+                            &client,
+                            &topics,
+                            &config,
+                            pending_shutdown.as_ref(),
+                            &mut published_states,
+                        )
+                        .await;
+                    }
                 }
                 if connected {
                     publish_availability(&client, &topics, false).await?;
@@ -534,6 +562,14 @@ where
                                             replaced_existing = replaced,
                                             "scheduled shutdown command received from MQTT"
                                         );
+                                        sync_shutdown_state(
+                                            &client,
+                                            &topics,
+                                            &config,
+                                            pending_shutdown.as_ref(),
+                                            &mut published_states,
+                                        )
+                                        .await;
                                     }
 
                                     continue;
@@ -544,6 +580,14 @@ where
                                     } else {
                                         info!("shutdown cancel requested, but no pending shutdown exists");
                                     }
+                                    sync_shutdown_state(
+                                        &client,
+                                        &topics,
+                                        &config,
+                                        pending_shutdown.as_ref(),
+                                        &mut published_states,
+                                    )
+                                    .await;
 
                                     continue;
                                 }
@@ -1176,6 +1220,27 @@ fn cancel_pending_shutdown(pending_shutdown: &mut Option<PendingShutdown>) -> bo
 fn current_shutdown_state(pending_shutdown: Option<&PendingShutdown>) -> ShutdownState {
     ShutdownState {
         shutdown_remaining_secs: pending_shutdown.map(remaining_shutdown_secs).unwrap_or(0),
+    }
+}
+
+async fn sync_shutdown_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    config: &Config,
+    pending_shutdown: Option<&PendingShutdown>,
+    published_states: &mut PublishedStates,
+) {
+    if !config.enable_shutdown_button || config.shutdown_delay_secs == 0 {
+        published_states.shutdown.clear();
+        return;
+    }
+
+    let shutdown_state = current_shutdown_state(pending_shutdown);
+    if let Err(error) = publish_shutdown_state(client, topics, &shutdown_state).await {
+        error!(%error, "failed to publish shutdown state");
+        published_states.shutdown.clear();
+    } else {
+        published_states.shutdown.mark_published(shutdown_state);
     }
 }
 
