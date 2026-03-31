@@ -10,8 +10,8 @@ pub use bootstrap::BootstrapOptions;
 pub use file::{
     CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuThresholdConfig, DeviceConfig, FileConfig,
     GpuThresholdConfig, HomeAssistantConfig, MetricSamplingConfig, MetricThresholdConfig,
-    MqttConfig, SamplingConfig, ShutdownConfig, ThresholdsConfig, load_config_file_from,
-    seed_config_toml,
+    MqttConfig, NetworkConfig, SamplingConfig, ShutdownConfig, ThresholdsConfig,
+    load_config_file_from, seed_config_toml,
 };
 pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
@@ -28,6 +28,7 @@ pub struct Config {
     pub topic_prefix: String,
     pub node_id: Option<String>,
     pub device_name: Option<String>,
+    pub network_include_interfaces: Vec<String>,
     pub enable_shutdown_button: bool,
     pub shutdown_payload: String,
     pub shutdown_dry_run: bool,
@@ -36,6 +37,7 @@ pub struct Config {
     pub memory_interval_secs: u64,
     pub uptime_interval_secs: u64,
     pub disk_interval_secs: u64,
+    pub network_interval_secs: u64,
     pub cpu_change_threshold_pct: f32,
     pub gpu_usage_change_threshold_pct: f32,
     pub gpu_memory_change_threshold_mib: u64,
@@ -67,6 +69,7 @@ impl Config {
             mqtt,
             home_assistant,
             device,
+            network,
             sampling,
             thresholds,
             shutdown,
@@ -93,6 +96,12 @@ impl Config {
             ),
             node_id: device.node_id,
             device_name: device.name,
+            network_include_interfaces: network
+                .include_interfaces
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
             enable_shutdown_button: value_or_default(shutdown.enable_button, false),
             shutdown_payload: value_or_default(shutdown.payload, "shutdown".to_string()),
             shutdown_dry_run: value_or_default(shutdown.dry_run, false),
@@ -101,6 +110,7 @@ impl Config {
             memory_interval_secs: value_or_default(sampling.memory.interval_secs, 5),
             uptime_interval_secs: value_or_default(sampling.uptime.interval_secs, 300),
             disk_interval_secs: value_or_default(sampling.disk.interval_secs, 30),
+            network_interval_secs: value_or_default(sampling.network.interval_secs, 1),
             cpu_change_threshold_pct: value_or_default(thresholds.cpu.usage_pct, 1.0),
             gpu_usage_change_threshold_pct: value_or_default(thresholds.gpu.usage_pct, 1.0),
             gpu_memory_change_threshold_mib: value_or_default(thresholds.gpu.memory_change_mib, 8),
@@ -154,6 +164,9 @@ mod tests {
                 node_id: Some("node-a".to_string()),
                 name: Some("Node A".to_string()),
             },
+            network: NetworkConfig {
+                include_interfaces: vec!["Ethernet".to_string(), "Wi-Fi".to_string()],
+            },
             sampling: SamplingConfig {
                 cpu: MetricSamplingConfig {
                     interval_secs: Some(2),
@@ -169,6 +182,9 @@ mod tests {
                 },
                 disk: MetricSamplingConfig {
                     interval_secs: Some(45),
+                },
+                network: MetricSamplingConfig {
+                    interval_secs: Some(1),
                 },
             },
             thresholds: ThresholdsConfig {
@@ -209,11 +225,13 @@ mod tests {
         assert_eq!(config.discovery_prefix, "ha");
         assert_eq!(config.topic_prefix, "custom/monitor");
         assert_eq!(config.node_id.as_deref(), Some("node-a"));
+        assert_eq!(config.network_include_interfaces, vec!["Ethernet", "Wi-Fi"]);
         assert_eq!(config.cpu_interval_secs, 2);
         assert_eq!(config.gpu_interval_secs, 3);
         assert_eq!(config.memory_interval_secs, 7);
         assert_eq!(config.uptime_interval_secs, 600);
         assert_eq!(config.disk_interval_secs, 45);
+        assert_eq!(config.network_interval_secs, 1);
         assert_eq!(config.cpu_change_threshold_pct, 2.5);
         assert_eq!(config.gpu_usage_change_threshold_pct, 3.5);
         assert_eq!(config.gpu_memory_change_threshold_mib, 16);
@@ -247,6 +265,8 @@ mod tests {
         assert_eq!(config.memory_interval_secs, 5);
         assert_eq!(config.uptime_interval_secs, 300);
         assert_eq!(config.disk_interval_secs, 30);
+        assert_eq!(config.network_interval_secs, 1);
+        assert!(config.network_include_interfaces.is_empty());
         assert_eq!(config.cpu_change_threshold_pct, 1.0);
         assert_eq!(config.gpu_usage_change_threshold_pct, 1.0);
         assert_eq!(config.gpu_memory_change_threshold_mib, 8);

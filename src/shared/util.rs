@@ -41,6 +41,26 @@ pub fn slugify(value: &str) -> String {
     slug.trim_matches('_').to_string()
 }
 
+pub fn mqtt_discovery_id(value: &str) -> String {
+    let mut id = String::new();
+    let mut previous_was_separator = false;
+
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if matches!(ch, '-' | '_') {
+            id.push(ch);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            id.push('_');
+            previous_was_separator = true;
+        }
+    }
+
+    id.trim_matches(|ch| ch == '_' || ch == '-').to_string()
+}
+
 pub fn files_match(source: &Path, destination: &Path) -> io::Result<bool> {
     let source_metadata = fs::metadata(source)?;
     let destination_metadata = match fs::metadata(destination) {

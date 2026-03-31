@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::device::{Identity, Topics};
-use crate::system::models::{DiskState, GpuState};
+use crate::system::models::{DiskInfoState, GpuInfoState, NetworkInfoState};
 
 const CELSIUS_UNIT: &str = "\u{00B0}C";
 
@@ -62,6 +62,8 @@ struct Component {
     unique_id: String,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    default_entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     value_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     state_topic: Option<String>,
@@ -95,6 +97,7 @@ impl Component {
             platform: "sensor",
             unique_id: format!("{}-{}", identity.device_id, component_id),
             name: name.into(),
+            default_entity_id: Some(default_entity_id(identity, "sensor", component_id)),
             value_template: Some(value_template.into()),
             state_topic: Some(state_topic),
             command_topic: None,
@@ -119,6 +122,7 @@ impl Component {
             platform: "button",
             unique_id: format!("{}-{}", identity.device_id, component_id),
             name: name.into(),
+            default_entity_id: Some(default_entity_id(identity, "button", component_id)),
             value_template: None,
             state_topic: None,
             command_topic: Some(command_topic),
@@ -163,14 +167,23 @@ impl Component {
     }
 }
 
+fn default_entity_id(identity: &Identity, domain: &str, component_id: &str) -> String {
+    format!(
+        "{domain}.{}_{}",
+        identity.entity_id_prefix,
+        component_id.to_ascii_lowercase()
+    )
+}
+
 pub fn build_device_discovery_message(
     config: &Config,
     identity: &Identity,
     topics: &Topics,
-    gpu_state: Option<&GpuState>,
-    disks: &DiskState,
+    gpu_info: Option<&GpuInfoState>,
+    disks: &DiskInfoState,
+    network_info: &NetworkInfoState,
 ) -> DeviceDiscoveryMessage {
-    let components = build_components(config, identity, topics, gpu_state, disks);
+    let components = build_components(config, identity, topics, gpu_info, disks, network_info);
 
     let payload = DeviceDiscoveryPayload {
         device: DeviceInfo {
@@ -204,8 +217,9 @@ fn build_components(
     config: &Config,
     identity: &Identity,
     topics: &Topics,
-    gpu_state: Option<&GpuState>,
-    disks: &DiskState,
+    gpu_info: Option<&GpuInfoState>,
+    disks: &DiskInfoState,
+    network_info: &NetworkInfoState,
 ) -> BTreeMap<String, Component> {
     let mut components = BTreeMap::new();
 
@@ -246,7 +260,7 @@ fn build_components(
             identity,
             "cpu_model",
             "CPU Model",
-            topics.cpu_state.clone(),
+            topics.cpu_info_state.clone(),
             "{{ value_json.cpu_model }}",
         )
         .with_icon("mdi:chip"),
@@ -258,7 +272,7 @@ fn build_components(
             identity,
             "os_version",
             "OS Version",
-            topics.cpu_state.clone(),
+            topics.host_info_state.clone(),
             "{{ value_json.os_version }}",
         )
         .with_icon("mdi:information-outline"),
@@ -279,14 +293,14 @@ fn build_components(
         .with_icon("mdi:timer-outline"),
     );
 
-    if let Some(gpu_state) = gpu_state {
+    if let Some(gpu_info) = gpu_info {
         components.insert(
             "gpu_name".to_string(),
             Component::sensor(
                 identity,
                 "gpu_name",
                 "GPU Name",
-                topics.gpu_state.clone(),
+                topics.gpu_info_state.clone(),
                 "{{ value_json.gpu_name }}",
             )
             .with_icon("mdi:expansion-card"),
@@ -307,23 +321,21 @@ fn build_components(
             .with_icon("mdi:expansion-card"),
         );
 
-        if gpu_state.gpu_temperature.is_some() {
-            components.insert(
-                "gpu_temperature".to_string(),
-                Component::sensor(
-                    identity,
-                    "gpu_temperature",
-                    "GPU Temperature",
-                    topics.gpu_state.clone(),
-                    "{{ value_json.gpu_temperature }}",
-                )
-                .with_unit(CELSIUS_UNIT)
-                .with_device_class("temperature")
-                .with_state_class("measurement")
-                .with_precision(1)
-                .with_icon("mdi:thermometer"),
-            );
-        }
+        components.insert(
+            "gpu_temperature".to_string(),
+            Component::sensor(
+                identity,
+                "gpu_temperature",
+                "GPU Temperature",
+                topics.gpu_state.clone(),
+                "{{ value_json.gpu_temperature | default(none) }}",
+            )
+            .with_unit(CELSIUS_UNIT)
+            .with_device_class("temperature")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:thermometer"),
+        );
 
         components.insert(
             "gpu_memory_available".to_string(),
@@ -361,7 +373,7 @@ fn build_components(
                 identity,
                 "gpu_memory_total",
                 "GPU Memory Total",
-                topics.gpu_state.clone(),
+                topics.gpu_info_state.clone(),
                 "{{ value_json.gpu_memory_total }}",
             )
             .with_unit("B")
@@ -385,7 +397,7 @@ fn build_components(
             .with_icon("mdi:memory"),
         );
 
-        if gpu_state.gpu_memory_total == 0 {
+        if gpu_info.gpu_memory_total == 0 {
             components.remove("gpu_memory_total");
             components.remove("gpu_memory_available");
             components.remove("gpu_memory_used");
@@ -414,7 +426,7 @@ fn build_components(
             identity,
             "memory_total",
             "Memory Total",
-            topics.memory_state.clone(),
+            topics.memory_info_state.clone(),
             "{{ value_json.memory_total }}",
         )
         .with_unit("B")
@@ -438,6 +450,68 @@ fn build_components(
         .with_icon("mdi:memory"),
     );
 
+    components.insert(
+        "network_download_rate".to_string(),
+        Component::sensor(
+            identity,
+            "network_download_rate",
+            "Network Download Rate",
+            topics.network_state.clone(),
+            "{{ value_json.network_download_rate }}",
+        )
+        .with_unit("B/s")
+        .with_device_class("data_rate")
+        .with_state_class("measurement")
+        .with_precision(1)
+        .with_icon("mdi:download-network"),
+    );
+
+    components.insert(
+        "network_upload_rate".to_string(),
+        Component::sensor(
+            identity,
+            "network_upload_rate",
+            "Network Upload Rate",
+            topics.network_state.clone(),
+            "{{ value_json.network_upload_rate }}",
+        )
+        .with_unit("B/s")
+        .with_device_class("data_rate")
+        .with_state_class("measurement")
+        .with_precision(1)
+        .with_icon("mdi:upload-network"),
+    );
+
+    components.insert(
+        "network_total_download".to_string(),
+        Component::sensor(
+            identity,
+            "network_total_download",
+            "Network Total Download",
+            topics.network_state.clone(),
+            "{{ value_json.network_total_download }}",
+        )
+        .with_unit("B")
+        .with_device_class("data_size")
+        .with_state_class("total_increasing")
+        .with_icon("mdi:download"),
+    );
+
+    components.insert(
+        "network_total_upload".to_string(),
+        Component::sensor(
+            identity,
+            "network_total_upload",
+            "Network Total Upload",
+            topics.network_state.clone(),
+            "{{ value_json.network_total_upload }}",
+        )
+        .with_unit("B")
+        .with_device_class("data_size")
+        .with_state_class("total_increasing")
+        .with_icon("mdi:upload"),
+    );
+
     if config.enable_shutdown_button {
         components.insert(
             "shutdown_host".to_string(),
@@ -453,6 +527,82 @@ fn build_components(
         );
     }
 
+    for (interface_id, interface) in &network_info.interfaces {
+        components.insert(
+            format!("network_{}_download_rate", interface_id),
+            Component::sensor(
+                identity,
+                &format!("network_{}_download_rate", interface_id),
+                format!("Network {} Download Rate", interface.name),
+                topics.network_state.clone(),
+                format!(
+                    "{{{{ value_json.interfaces.{}.download_rate | default(none) }}}}",
+                    interface_id
+                ),
+            )
+            .with_unit("B/s")
+            .with_device_class("data_rate")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:download-network"),
+        );
+
+        components.insert(
+            format!("network_{}_upload_rate", interface_id),
+            Component::sensor(
+                identity,
+                &format!("network_{}_upload_rate", interface_id),
+                format!("Network {} Upload Rate", interface.name),
+                topics.network_state.clone(),
+                format!(
+                    "{{{{ value_json.interfaces.{}.upload_rate | default(none) }}}}",
+                    interface_id
+                ),
+            )
+            .with_unit("B/s")
+            .with_device_class("data_rate")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:upload-network"),
+        );
+
+        components.insert(
+            format!("network_{}_total_download", interface_id),
+            Component::sensor(
+                identity,
+                &format!("network_{}_total_download", interface_id),
+                format!("Network {} Total Download", interface.name),
+                topics.network_state.clone(),
+                format!(
+                    "{{{{ value_json.interfaces.{}.total_download | default(none) }}}}",
+                    interface_id
+                ),
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("total_increasing")
+            .with_icon("mdi:download"),
+        );
+
+        components.insert(
+            format!("network_{}_total_upload", interface_id),
+            Component::sensor(
+                identity,
+                &format!("network_{}_total_upload", interface_id),
+                format!("Network {} Total Upload", interface.name),
+                topics.network_state.clone(),
+                format!(
+                    "{{{{ value_json.interfaces.{}.total_upload | default(none) }}}}",
+                    interface_id
+                ),
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("total_increasing")
+            .with_icon("mdi:upload"),
+        );
+    }
+
     for (disk_id, disk) in &disks.disks {
         components.insert(
             format!("disk_{}_used", disk_id),
@@ -461,7 +611,10 @@ fn build_components(
                 &format!("disk_{}_used", disk_id),
                 format!("Disk {} Used", disk.mount_point),
                 topics.disk_state.clone(),
-                format!("{{{{ value_json.disks.{}.used }}}}", disk_id),
+                format!(
+                    "{{{{ value_json.disks.{}.used | default(none) }}}}",
+                    disk_id
+                ),
             )
             .with_unit("B")
             .with_device_class("data_size")
@@ -476,7 +629,10 @@ fn build_components(
                 &format!("disk_{}_available", disk_id),
                 format!("Disk {} Available", disk.mount_point),
                 topics.disk_state.clone(),
-                format!("{{{{ value_json.disks.{}.available }}}}", disk_id),
+                format!(
+                    "{{{{ value_json.disks.{}.available | default(none) }}}}",
+                    disk_id
+                ),
             )
             .with_unit("B")
             .with_device_class("data_size")
@@ -490,8 +646,11 @@ fn build_components(
                 identity,
                 &format!("disk_{}_total", disk_id),
                 format!("Disk {} Total", disk.mount_point),
-                topics.disk_state.clone(),
-                format!("{{{{ value_json.disks.{}.total }}}}", disk_id),
+                topics.disk_info_state.clone(),
+                format!(
+                    "{{{{ value_json.disks.{}.total | default(none) }}}}",
+                    disk_id
+                ),
             )
             .with_unit("B")
             .with_device_class("data_size")
@@ -506,7 +665,10 @@ fn build_components(
                 &format!("disk_{}_usage", disk_id),
                 format!("Disk {} Usage", disk.mount_point),
                 topics.disk_state.clone(),
-                format!("{{{{ value_json.disks.{}.usage }}}}", disk_id),
+                format!(
+                    "{{{{ value_json.disks.{}.usage | default(none) }}}}",
+                    disk_id
+                ),
             )
             .with_unit("%")
             .with_state_class("measurement")

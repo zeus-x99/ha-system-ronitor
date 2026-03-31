@@ -1,10 +1,22 @@
+#[derive(Debug, Clone)]
+pub struct GpuReading {
+    pub timestamp: String,
+    pub gpu_name: String,
+    pub gpu_usage: f32,
+    pub gpu_temperature: Option<f32>,
+    pub gpu_memory_available: u64,
+    pub gpu_memory_used: u64,
+    pub gpu_memory_total: u64,
+    pub gpu_memory_usage: f64,
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod nvml_native {
     use chrono::Utc;
     use nvml_wrapper::{Nvml, enum_wrappers::device::TemperatureSensor};
     use tracing::debug;
 
-    use crate::system::models::GpuState;
+    use crate::system::gpu::GpuReading;
 
     #[derive(Debug)]
     pub struct NvidiaGpuReader {
@@ -33,7 +45,7 @@ mod nvml_native {
             })
         }
 
-        pub fn read(&self) -> Option<GpuState> {
+        pub fn read(&self) -> Option<GpuReading> {
             let device = self.nvml.device_by_index(self.device_index).ok()?;
             let memory = device.memory_info().ok()?;
             let utilization = device.utilization_rates().ok()?;
@@ -41,7 +53,7 @@ mod nvml_native {
             let memory_used = memory.used.min(memory.total);
             let memory_available = memory.total.saturating_sub(memory_used);
 
-            Some(GpuState {
+            Some(GpuReading {
                 timestamp: Utc::now().to_rfc3339(),
                 gpu_name: self.device_name.clone(),
                 gpu_usage: utilization.gpu as f32,
@@ -116,7 +128,7 @@ impl GpuReader {
         }
     }
 
-    pub fn read(&mut self) -> Option<crate::system::models::GpuState> {
+    pub fn read(&mut self) -> Option<crate::system::gpu::GpuReading> {
         self.ensure_nvml_reader();
         let state = self.nvml_reader.as_ref().and_then(NvidiaGpuReader::read);
         if state.is_none() {
@@ -145,8 +157,7 @@ mod linux_native {
     use chrono::Utc;
     use tracing::debug;
 
-    use crate::system::gpu::NvidiaGpuReader;
-    use crate::system::models::GpuState;
+    use crate::system::gpu::{GpuReading, NvidiaGpuReader};
 
     const DRM_CLASS_DISPLAY_VGA: u64 = 0x030000;
     const DRM_CLASS_DISPLAY_3D: u64 = 0x030200;
@@ -261,7 +272,7 @@ mod linux_native {
             }
         }
 
-        pub fn read(&mut self) -> Option<GpuState> {
+        pub fn read(&mut self) -> Option<GpuReading> {
             self.ensure_backend();
             let state = self.backend.as_mut().and_then(GpuBackend::read);
             if state.is_none()
@@ -291,7 +302,7 @@ mod linux_native {
     }
 
     impl GpuBackend {
-        fn read(&mut self) -> Option<GpuState> {
+        fn read(&mut self) -> Option<GpuReading> {
             match self {
                 Self::Nvidia(reader) => reader.read(),
                 Self::Sysfs(reader) => reader.read(),
@@ -366,7 +377,7 @@ mod linux_native {
             )
         }
 
-        fn read(&mut self) -> Option<GpuState> {
+        fn read(&mut self) -> Option<GpuReading> {
             let gpu_usage = self.usage_source.as_mut().and_then(UsageSource::read);
             let gpu_memory = self.memory_source.as_ref().and_then(MemorySource::read);
             let usage_source_failed = self.usage_source.is_some() && gpu_usage.is_none();
@@ -381,7 +392,7 @@ mod linux_native {
             let (gpu_memory_total, gpu_memory_used) = gpu_memory.unwrap_or((0, 0));
             let gpu_memory_used = gpu_memory_used.min(gpu_memory_total);
 
-            Some(GpuState {
+            Some(GpuReading {
                 timestamp: Utc::now().to_rfc3339(),
                 gpu_name: self.gpu_name.clone(),
                 gpu_usage: gpu_usage.total,
@@ -850,7 +861,7 @@ impl GpuReader {
         Self
     }
 
-    pub fn read(&mut self) -> Option<crate::system::models::GpuState> {
+    pub fn read(&mut self) -> Option<crate::system::gpu::GpuReading> {
         None
     }
 }

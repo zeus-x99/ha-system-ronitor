@@ -33,6 +33,13 @@ topic_prefix = "monitor/system"
 # 不填写时，程序会使用“<主机名> System Monitor”。
 # name = "My Host System Monitor"
 
+[network]
+# 需要监控的网卡名称白名单。
+# 这里的名称必须和系统里的网卡名称一致，例如 Windows 常见的是 `Ethernet`、`Wi-Fi`。
+# 汇总网络流量和按网卡实体都会只统计这里列出的网卡。
+# 如果留空，则会监控所有非回环网卡。
+include_interfaces = ["Ethernet", "Wi-Fi"]
+
 [sampling.cpu]
 # CPU 采样与发布间隔，单位：秒。
 interval_secs = 1
@@ -53,6 +60,11 @@ interval_secs = 300
 [sampling.disk]
 # 磁盘采样与发布间隔，单位：秒。
 interval_secs = 30
+
+[sampling.network]
+# 网络流量采样与发布间隔，单位：秒。
+# `network_download_rate` / `network_upload_rate` 会按这个周期更新。
+interval_secs = 1
 
 [thresholds.cpu]
 # CPU 使用率变化达到这个百分比后，才发布新值。

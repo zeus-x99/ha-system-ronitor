@@ -1,11 +1,15 @@
 use anyhow::{Context, Result};
 use rumqttc::{AsyncClient, LastWill, MqttOptions, Publish, QoS};
+use serde::Serialize;
 use tracing::info;
 
 use crate::config::Config;
 use crate::device::{Identity, Topics};
 use crate::integrations::home_assistant::discovery::build_device_discovery_message;
-use crate::system::models::{CpuState, DiskState, GpuState, MemoryState, UptimeState};
+use crate::system::models::{
+    CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
+    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, UptimeState,
+};
 
 const MQTT_MAX_PACKET_SIZE: usize = 64 * 1024;
 
@@ -13,12 +17,48 @@ pub struct DiscoveryPublishArgs<'a> {
     pub config: &'a Config,
     pub identity: &'a Identity,
     pub topics: &'a Topics,
-    pub gpu_state: Option<&'a GpuState>,
-    pub disk_state: &'a DiskState,
+    pub gpu_info: Option<&'a GpuInfoState>,
+    pub disk_info: &'a DiskInfoState,
+    pub network_info: &'a NetworkInfoState,
 }
 
 pub fn build_mqtt_options(config: &Config, identity: &Identity, topics: &Topics) -> MqttOptions {
     let client_id = format!("ha-system-ronitor-{}", identity.node_id);
+    build_mqtt_options_with_client_id(
+        config,
+        client_id,
+        Some(LastWill::new(
+            topics.availability.clone(),
+            "offline",
+            QoS::AtLeastOnce,
+            true,
+        )),
+    )
+}
+
+pub fn build_lock_mqtt_options(
+    config: &Config,
+    client_id: String,
+    lock_will_payload: Vec<u8>,
+    topics: &Topics,
+) -> MqttOptions {
+    build_mqtt_options_with_client_id(
+        config,
+        client_id,
+        Some(LastWill::new(
+            topics.node_lock.clone(),
+            lock_will_payload,
+            QoS::AtLeastOnce,
+            true,
+        )),
+    )
+}
+
+fn build_mqtt_options_with_client_id(
+    config: &Config,
+    client_id: String,
+    last_will: Option<LastWill>,
+) -> MqttOptions {
     let mut mqtt_options = MqttOptions::new(client_id, &config.mqtt_host, config.mqtt_port);
     mqtt_options.set_max_packet_size(MQTT_MAX_PACKET_SIZE, MQTT_MAX_PACKET_SIZE);
 
@@ -29,12 +69,9 @@ pub fn build_mqtt_options(config: &Config, identity: &Identity, topics: &Topics)
         );
     }
 
-    mqtt_options.set_last_will(LastWill::new(
-        topics.availability.clone(),
-        "offline",
-        QoS::AtLeastOnce,
-        true,
-    ));
+    if let Some(last_will) = last_will {
+        mqtt_options.set_last_will(last_will);
+    }
 
     mqtt_options
 }
@@ -53,8 +90,9 @@ pub async fn publish_discovery_if_needed(
         args.config,
         args.identity,
         args.topics,
-        args.gpu_state,
-        args.disk_state,
+        args.gpu_info,
+        args.disk_info,
+        args.network_info,
     );
     let device_payload = serde_json::to_vec(&message.payload)
         .context("failed to serialize device discovery payload")?;
@@ -77,8 +115,16 @@ pub async fn publish_discovery_if_needed(
         .await
         .context("failed to publish device discovery payload")?;
 
+    if let Some(legacy_topic) = args.topics.legacy_device_discovery.as_ref() {
+        client
+            .publish(legacy_topic.clone(), QoS::AtLeastOnce, true, Vec::new())
+            .await
+            .context("failed to clear legacy device discovery payload")?;
+    }
+
     *last_payload = Some(device_payload);
     info!(
+        topic = %message.topic,
         component_count = message.component_count(),
         "published Home Assistant device discovery payload"
     );
@@ -91,13 +137,37 @@ pub async fn publish_cpu_state(
     topics: &Topics,
     state: &CpuState,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(state).context("failed to serialize CPU state payload")?;
-    client
-        .publish(topics.cpu_state.clone(), QoS::AtLeastOnce, false, payload)
-        .await
-        .context("failed to publish CPU state payload")?;
+    publish_json(client, &topics.cpu_state, state, false, "CPU state payload").await
+}
 
-    Ok(())
+pub async fn publish_host_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &HostInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.host_info_state,
+        state,
+        true,
+        "host info payload",
+    )
+    .await
+}
+
+pub async fn publish_cpu_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &CpuInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.cpu_info_state,
+        state,
+        true,
+        "CPU info payload",
+    )
+    .await
 }
 
 pub async fn publish_uptime_state(
@@ -105,18 +175,14 @@ pub async fn publish_uptime_state(
     topics: &Topics,
     state: &UptimeState,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(state).context("failed to serialize uptime state payload")?;
-    client
-        .publish(
-            topics.uptime_state.clone(),
-            QoS::AtLeastOnce,
-            false,
-            payload,
-        )
-        .await
-        .context("failed to publish uptime state payload")?;
-
-    Ok(())
+    publish_json(
+        client,
+        &topics.uptime_state,
+        state,
+        false,
+        "uptime state payload",
+    )
+    .await
 }
 
 pub async fn publish_gpu_state(
@@ -124,13 +190,37 @@ pub async fn publish_gpu_state(
     topics: &Topics,
     state: &GpuState,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(state).context("failed to serialize GPU state payload")?;
-    client
-        .publish(topics.gpu_state.clone(), QoS::AtLeastOnce, false, payload)
-        .await
-        .context("failed to publish GPU state payload")?;
+    publish_json(client, &topics.gpu_state, state, false, "GPU state payload").await
+}
 
-    Ok(())
+pub async fn publish_gpu_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &GpuInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.gpu_info_state,
+        state,
+        true,
+        "GPU info payload",
+    )
+    .await
+}
+
+pub async fn publish_memory_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &MemoryInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.memory_info_state,
+        state,
+        true,
+        "memory info payload",
+    )
+    .await
 }
 
 pub async fn publish_memory_state(
@@ -138,18 +228,29 @@ pub async fn publish_memory_state(
     topics: &Topics,
     state: &MemoryState,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(state).context("failed to serialize memory state payload")?;
-    client
-        .publish(
-            topics.memory_state.clone(),
-            QoS::AtLeastOnce,
-            false,
-            payload,
-        )
-        .await
-        .context("failed to publish memory state payload")?;
+    publish_json(
+        client,
+        &topics.memory_state,
+        state,
+        false,
+        "memory state payload",
+    )
+    .await
+}
 
-    Ok(())
+pub async fn publish_disk_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &DiskInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.disk_info_state,
+        state,
+        true,
+        "disk info payload",
+    )
+    .await
 }
 
 pub async fn publish_disk_state(
@@ -157,13 +258,44 @@ pub async fn publish_disk_state(
     topics: &Topics,
     state: &DiskState,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(state).context("failed to serialize disk state payload")?;
-    client
-        .publish(topics.disk_state.clone(), QoS::AtLeastOnce, false, payload)
-        .await
-        .context("failed to publish disk state payload")?;
+    publish_json(
+        client,
+        &topics.disk_state,
+        state,
+        false,
+        "disk state payload",
+    )
+    .await
+}
 
-    Ok(())
+pub async fn publish_network_info_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &NetworkInfoState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.network_info_state,
+        state,
+        true,
+        "network info payload",
+    )
+    .await
+}
+
+pub async fn publish_network_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &NetworkState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.network_state,
+        state,
+        false,
+        "network state payload",
+    )
+    .await
 }
 
 pub async fn publish_availability(
@@ -181,6 +313,23 @@ pub async fn publish_availability(
         )
         .await
         .context("failed to publish availability payload")?;
+
+    Ok(())
+}
+
+async fn publish_json<T: Serialize>(
+    client: &AsyncClient,
+    topic: &str,
+    state: &T,
+    retain: bool,
+    payload_name: &str,
+) -> Result<()> {
+    let payload =
+        serde_json::to_vec(state).with_context(|| format!("failed to serialize {payload_name}"))?;
+    client
+        .publish(topic.to_string(), QoS::AtLeastOnce, retain, payload)
+        .await
+        .with_context(|| format!("failed to publish {payload_name}"))?;
 
     Ok(())
 }

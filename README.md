@@ -32,6 +32,12 @@
   - `memory_used`
   - `memory_total`
   - `memory_usage`
+- 网络
+  - `network_download_rate`
+  - `network_upload_rate`
+  - `network_total_download`
+  - `network_total_upload`
+  - 如果配置了 `network.include_interfaces`，还会额外发布对应网卡的同名分项实体
 - 磁盘
   - 每个挂载点发布 `used` / `available` / `total` / `usage`
 - 可选控制
@@ -65,6 +71,9 @@ password = "change-me"
 discovery_prefix = "homeassistant"
 status_topic = "homeassistant/status"
 topic_prefix = "monitor/system"
+
+[network]
+include_interfaces = ["Ethernet", "Wi-Fi"]
 ```
 
 3. 启动：
@@ -80,6 +89,7 @@ cargo run --release
 - CPU：默认每 `1` 秒采样一次
 - GPU：默认每 `1` 秒采样一次
 - 内存：默认每 `5` 秒采样一次
+- 网络：默认每 `1` 秒采样一次
 - Uptime：默认每 `300` 秒发布一次
 - 磁盘：默认每 `30` 秒采样一次
 
@@ -90,6 +100,33 @@ cargo run --release
 - CPU / GPU 使用率：默认 `1.0%`
 - GPU / 内存变化：默认 `8 MiB`
 - 磁盘变化：默认 `32 MiB`
+
+## 网络流量
+
+- 当前通过 `sysinfo` 采集网络流量，支持跨平台
+- `network_download_rate` / `network_upload_rate` 表示当前上下行速率，单位是 `B/s`
+- `network_total_download` / `network_total_upload` 表示自系统启动以来的累计上下行字节数
+- 如果配置了 `network.include_interfaces`，程序会：
+  - 只统计这些白名单网卡
+  - 额外发布每张网卡自己的上下行速率和累计流量
+
+例如：
+
+```toml
+[network]
+include_interfaces = ["Ethernet", "Wi-Fi"]
+```
+
+这样会额外出现类似这些实体：
+
+- `network_ethernet_download_rate`
+- `network_ethernet_upload_rate`
+- `network_ethernet_total_download`
+- `network_ethernet_total_upload`
+- `network_wi_fi_download_rate`
+- `network_wi_fi_upload_rate`
+- `network_wi_fi_total_download`
+- `network_wi_fi_total_upload`
 
 ## 温度与 GPU 支持
 
@@ -239,8 +276,10 @@ NixOS 模块示例：
               sampling.cpu.interval_secs = 1;
               sampling.gpu.interval_secs = 1;
               sampling.memory.interval_secs = 5;
+              sampling.network.interval_secs = 1;
               sampling.uptime.interval_secs = 300;
               sampling.disk.interval_secs = 30;
+              network.include_interfaces = [ "Ethernet" "Wi-Fi" ];
               thresholds.cpu.usage_pct = 1.0;
               thresholds.gpu = {
                 usage_pct = 1.0;

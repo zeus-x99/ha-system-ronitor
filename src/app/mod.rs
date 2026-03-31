@@ -4,10 +4,14 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+use chrono::Utc;
 use rumqttc::mqttbytes::v4::SubscribeReasonCode;
 use rumqttc::{AsyncClient, Event, Outgoing, Packet, QoS};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -15,26 +19,23 @@ use tracing_appender::non_blocking::WorkerGuard;
 use crate::config::{BootstrapOptions, Config, load_config};
 use crate::device::{Identity, Topics};
 use crate::integrations::mqtt::{
-    DiscoveryPublishArgs, build_mqtt_options, is_home_assistant_birth_message,
-    publish_availability, publish_cpu_state, publish_discovery_if_needed, publish_disk_state,
-    publish_gpu_state, publish_memory_state, publish_uptime_state,
+    DiscoveryPublishArgs, build_lock_mqtt_options, build_mqtt_options,
+    is_home_assistant_birth_message, publish_availability, publish_cpu_info_state,
+    publish_cpu_state, publish_discovery_if_needed, publish_disk_info_state, publish_disk_state,
+    publish_gpu_info_state, publish_gpu_state, publish_host_info_state, publish_memory_info_state,
+    publish_memory_state, publish_network_info_state, publish_network_state, publish_uptime_state,
 };
+use crate::shared::util::slugify;
 use crate::system::collector::Collector;
-use crate::system::models::{CpuState, DiskState, GpuState, MemoryState, UptimeState};
+use crate::system::models::{
+    CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
+    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, UptimeState,
+};
 use crate::system::power::shutdown_host;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DiscoveryLayout {
-    has_gpu: bool,
-    has_gpu_temperature: bool,
-    has_gpu_memory: bool,
-    disks: Vec<(String, String)>,
-}
 
 #[derive(Debug, Default)]
 struct DiscoveryState {
     last_payload: Option<Vec<u8>>,
-    last_layout: Option<DiscoveryLayout>,
 }
 
 struct PublishContext<'a> {
@@ -50,9 +51,47 @@ struct FullSnapshot {
     gpu_state: Option<GpuState>,
     memory_state: MemoryState,
     disk_state: DiskState,
+    network_state: NetworkState,
+}
+
+struct StaticSnapshot {
+    host_info: HostInfoState,
+    cpu_info: CpuInfoState,
+    gpu_info: Option<GpuInfoState>,
+    memory_info: MemoryInfoState,
+    disk_info: DiskInfoState,
+    network_info: NetworkInfoState,
 }
 
 const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+const NODE_LOCK_SYNC_TIMEOUT: Duration = Duration::from_millis(400);
+const NODE_LOCK_CLAIM_WINDOW: Duration = Duration::from_millis(800);
+const NODE_LOCK_CONFIRM_TIMEOUT: Duration = Duration::from_millis(800);
+
+#[derive(Debug)]
+struct NodeLockGuard {
+    client: AsyncClient,
+    lock_topic: String,
+    offline_payload: Vec<u8>,
+    eventloop_task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeLockPayload {
+    node_id: String,
+    instance_id: String,
+    host_name: String,
+    started_at: String,
+    status: NodeLockStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum NodeLockStatus {
+    Claiming,
+    Online,
+    Offline,
+}
 
 #[derive(Debug, Default)]
 struct SubscriptionState {
@@ -95,6 +134,7 @@ struct PublishedStates {
     gpu: PublishedSlot<GpuState>,
     memory: PublishedSlot<MemoryState>,
     disk: PublishedSlot<DiskState>,
+    network: PublishedSlot<NetworkState>,
 }
 
 impl<T> PublishedSlot<T> {
@@ -117,18 +157,54 @@ impl<T> Default for PublishedSlot<T> {
     }
 }
 
-impl DiscoveryLayout {
-    fn from_states(gpu_state: Option<&GpuState>, disk_state: &DiskState) -> Self {
+impl NodeLockPayload {
+    fn new(identity: &Identity, instance_id: &str, status: NodeLockStatus) -> Self {
         Self {
-            has_gpu: gpu_state.is_some(),
-            has_gpu_temperature: gpu_state.is_some_and(|state| state.gpu_temperature.is_some()),
-            has_gpu_memory: gpu_state.is_some_and(|state| state.gpu_memory_total > 0),
-            disks: disk_state
-                .disks
-                .iter()
-                .map(|(disk_id, disk)| (disk_id.clone(), disk.mount_point.clone()))
-                .collect(),
+            node_id: identity.node_id.clone(),
+            instance_id: instance_id.to_string(),
+            host_name: identity.host_name.clone(),
+            started_at: Utc::now().to_rfc3339(),
+            status,
         }
+    }
+
+    fn is_online_for_other_instance(&self, instance_id: &str) -> bool {
+        self.status == NodeLockStatus::Online && self.instance_id != instance_id
+    }
+
+    fn is_claiming_for_other_instance(&self, instance_id: &str) -> bool {
+        self.status == NodeLockStatus::Claiming && self.instance_id != instance_id
+    }
+}
+
+impl NodeLockGuard {
+    async fn release(self) {
+        if let Err(error) = self
+            .client
+            .publish(
+                self.lock_topic.clone(),
+                QoS::AtLeastOnce,
+                true,
+                self.offline_payload.clone(),
+            )
+            .await
+        {
+            warn!(%error, topic = %self.lock_topic, "failed to publish offline node lock payload");
+        }
+
+        if let Err(error) = self.client.disconnect().await {
+            warn!(%error, "failed to disconnect node lock MQTT client");
+        }
+
+        self.eventloop_task.abort();
+    }
+
+    async fn disconnect(self) {
+        if let Err(error) = self.client.disconnect().await {
+            warn!(%error, "failed to disconnect node lock MQTT client");
+        }
+
+        self.eventloop_task.abort();
     }
 }
 
@@ -235,7 +311,9 @@ where
     F: Future<Output = ()>,
 {
     let identity = Identity::detect(&config);
-    let topics = Topics::from_config(&config, &identity.node_id);
+    let topics = Topics::from_identity(&config, &identity);
+    let (node_lock_guard, mut node_lock_loss_rx) =
+        acquire_node_lock(&config, &topics, &identity).await?;
 
     info!(
         device_name = %identity.device_name,
@@ -247,6 +325,8 @@ where
         memory_interval_secs = config.memory_interval_secs,
         uptime_interval_secs = config.uptime_interval_secs,
         disk_interval_secs = config.disk_interval_secs,
+        network_interval_secs = config.network_interval_secs,
+        network_include_interfaces = ?config.network_include_interfaces,
         cpu_change_threshold_pct = config.cpu_change_threshold_pct,
         gpu_usage_change_threshold_pct = config.gpu_usage_change_threshold_pct,
         gpu_memory_change_threshold_mib = config.gpu_memory_change_threshold_mib,
@@ -257,7 +337,7 @@ where
         "starting Home Assistant system monitor"
     );
 
-    let mut collector = Collector::new(&identity).await;
+    let mut collector = Collector::new(&identity, &config).await;
     let mut discovery_state = DiscoveryState::default();
     let mut published_states = PublishedStates::default();
     let mut mqtt_options = build_mqtt_options(&config, &identity, &topics);
@@ -288,6 +368,10 @@ where
     let mut disk_interval = tokio::time::interval(Duration::from_secs(config.disk_interval_secs));
     disk_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    let mut network_interval =
+        tokio::time::interval(Duration::from_secs(config.network_interval_secs));
+    network_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut connected = false;
     let mut availability_online_pending = false;
     let mut subscription_state = SubscriptionState::default();
@@ -295,12 +379,25 @@ where
 
     loop {
         tokio::select! {
+            maybe_reason = node_lock_loss_rx.recv() => {
+                let reason = maybe_reason.unwrap_or_else(|| {
+                    format!("node lock task for node_id `{}` stopped unexpectedly", identity.node_id)
+                });
+                error!(%reason, node_id = %identity.node_id, "node lock lost, stopping service");
+                if connected {
+                    publish_availability(&client, &topics, false).await?;
+                }
+                client.disconnect().await?;
+                node_lock_guard.disconnect().await;
+                break;
+            }
             _ = &mut shutdown_signal => {
                 info!("shutdown signal received");
                 if connected {
                     publish_availability(&client, &topics, false).await?;
                 }
                 client.disconnect().await?;
+                node_lock_guard.release().await;
                 break;
             }
             event = eventloop.poll() => {
@@ -317,16 +414,25 @@ where
                         )
                         .await;
 
-                        let (cpu_state, uptime_state, gpu_state, memory_state, disk_state) =
-                            collector.sample_all();
+                        let (
+                            cpu_state,
+                            uptime_state,
+                            gpu_state,
+                            memory_state,
+                            disk_state,
+                            network_state,
+                        ) = collector.sample_all();
+                        let static_snapshot = collect_static_snapshot(&collector);
                         publish_full_snapshot(
                             &publish_context,
+                            static_snapshot,
                             FullSnapshot {
                                 cpu_state,
                                 uptime_state,
                                 gpu_state,
                                 memory_state,
                                 disk_state,
+                                network_state,
                             },
                             &mut discovery_state,
                             &mut published_states,
@@ -377,16 +483,25 @@ where
                         info!("Home Assistant birth message received, refreshing discovery");
                         tokio::time::sleep(discovery_birth_delay(&identity.node_id)).await;
 
-                        let (cpu_state, uptime_state, gpu_state, memory_state, disk_state) =
-                            collector.sample_all();
+                        let (
+                            cpu_state,
+                            uptime_state,
+                            gpu_state,
+                            memory_state,
+                            disk_state,
+                            network_state,
+                        ) = collector.sample_all();
+                        let static_snapshot = collect_static_snapshot(&collector);
                         publish_full_snapshot(
                             &publish_context,
+                            static_snapshot,
                             FullSnapshot {
                                 cpu_state,
                                 uptime_state,
                                 gpu_state,
                                 memory_state,
                                 disk_state,
+                                network_state,
                             },
                             &mut discovery_state,
                             &mut published_states,
@@ -489,17 +604,6 @@ where
                 )
                 .await;
                 if let Some(gpu_state) = collector.sample_gpu() {
-                    if let Some(disk_state) = published_states.disk.state.as_ref() {
-                        refresh_discovery_layout(
-                            &publish_context,
-                            Some(&gpu_state),
-                            disk_state,
-                            &mut discovery_state,
-                            false,
-                        )
-                        .await;
-                    }
-
                     let changed = published_states
                         .gpu
                         .state
@@ -523,16 +627,6 @@ where
                     }
                 } else {
                     published_states.gpu.clear();
-                    if let Some(disk_state) = published_states.disk.state.as_ref() {
-                        refresh_discovery_layout(
-                            &publish_context,
-                            None,
-                            disk_state,
-                            &mut discovery_state,
-                            false,
-                        )
-                        .await;
-                    }
                 }
             }
             _ = memory_interval.tick() => {
@@ -576,9 +670,6 @@ where
 
                 let disk_state = collector.sample_disks();
                 ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
-                let gpu_state_for_discovery = published_states.gpu.state.as_ref();
-                let next_layout =
-                    DiscoveryLayout::from_states(gpu_state_for_discovery, &disk_state);
                 let changed = published_states
                     .disk
                     .state
@@ -596,16 +687,6 @@ where
                     &mut availability_online_pending,
                 )
                 .await;
-                if discovery_state.last_layout.as_ref() != Some(&next_layout) {
-                    refresh_discovery_layout(
-                        &publish_context,
-                        gpu_state_for_discovery,
-                        &disk_state,
-                        &mut discovery_state,
-                        false,
-                    )
-                    .await;
-                }
 
                 if !changed {
                     continue;
@@ -618,10 +699,309 @@ where
                     published_states.disk.mark_published(disk_state);
                 }
             }
+            _ = network_interval.tick() => {
+                if !connected {
+                    continue;
+                }
+
+                let network_state = collector.sample_network();
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                let changed = published_states
+                    .network
+                    .state
+                    .as_ref()
+                    .is_none_or(|previous| network_state.changed_from(previous));
+
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+
+                if !changed {
+                    continue;
+                }
+
+                if let Err(error) = publish_network_state(&client, &topics, &network_state).await {
+                    error!(%error, "failed to publish network state");
+                    published_states.network.clear();
+                } else {
+                    published_states.network.mark_published(network_state);
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+async fn acquire_node_lock(
+    config: &Config,
+    topics: &Topics,
+    identity: &Identity,
+) -> Result<(NodeLockGuard, UnboundedReceiver<String>)> {
+    let instance_id = build_lock_instance_id(identity);
+    let claiming_payload = NodeLockPayload::new(identity, &instance_id, NodeLockStatus::Claiming);
+    let online_payload = NodeLockPayload::new(identity, &instance_id, NodeLockStatus::Online);
+    let offline_payload = NodeLockPayload::new(identity, &instance_id, NodeLockStatus::Offline);
+    let offline_payload_bytes = serde_json::to_vec(&offline_payload)
+        .context("failed to serialize offline node lock payload")?;
+
+    let mut mqtt_options = build_lock_mqtt_options(
+        config,
+        format!("ha-system-ronitor-lock-{instance_id}"),
+        offline_payload_bytes.clone(),
+        topics,
+    );
+    mqtt_options.set_keep_alive(Duration::from_secs(10));
+
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 32);
+    client
+        .subscribe(topics.node_lock.clone(), QoS::AtLeastOnce)
+        .await
+        .with_context(|| format!("failed to subscribe node lock topic `{}`", topics.node_lock))?;
+
+    if let Some(existing_lock) =
+        wait_for_latest_lock_payload(&mut eventloop, &topics.node_lock, NODE_LOCK_SYNC_TIMEOUT)
+            .await?
+        && existing_lock.is_online_for_other_instance(&instance_id)
+    {
+        return Err(anyhow!(
+            "node_id `{}` is already locked by instance `{}` on host `{}`",
+            identity.node_id,
+            existing_lock.instance_id,
+            existing_lock.host_name
+        ));
+    }
+
+    let claiming_payload_bytes = serde_json::to_vec(&claiming_payload)
+        .context("failed to serialize claiming node lock payload")?;
+    client
+        .publish(
+            topics.node_lock.clone(),
+            QoS::AtLeastOnce,
+            true,
+            claiming_payload_bytes,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to publish claiming lock payload to `{}`",
+                topics.node_lock
+            )
+        })?;
+
+    let mut saw_self_claim = false;
+    let mut has_higher_priority_foreign_claim = false;
+    let claim_deadline = Instant::now() + NODE_LOCK_CLAIM_WINDOW;
+    while let Some(lock_payload) =
+        next_lock_payload_until(&mut eventloop, &topics.node_lock, claim_deadline).await?
+    {
+        if lock_payload.instance_id == instance_id
+            && lock_payload.status == NodeLockStatus::Claiming
+        {
+            saw_self_claim = true;
+            continue;
+        }
+
+        if lock_payload.is_online_for_other_instance(&instance_id) {
+            client.disconnect().await.ok();
+            return Err(anyhow!(
+                "node_id `{}` became locked by instance `{}` while claiming",
+                identity.node_id,
+                lock_payload.instance_id
+            ));
+        }
+
+        if lock_payload.is_claiming_for_other_instance(&instance_id)
+            && lock_payload.instance_id < instance_id
+        {
+            has_higher_priority_foreign_claim = true;
+        }
+    }
+
+    if !saw_self_claim {
+        publish_node_lock_payload(&client, topics, &offline_payload).await?;
+        client.disconnect().await.ok();
+        return Err(anyhow!(
+            "failed to confirm node lock claim for node_id `{}`",
+            identity.node_id
+        ));
+    }
+
+    if has_higher_priority_foreign_claim {
+        client.disconnect().await.ok();
+        return Err(anyhow!(
+            "node_id `{}` claim lost to another concurrently starting instance",
+            identity.node_id
+        ));
+    }
+
+    publish_node_lock_payload(&client, topics, &online_payload).await?;
+
+    let mut saw_self_online = false;
+    let confirm_deadline = Instant::now() + NODE_LOCK_CONFIRM_TIMEOUT;
+    while let Some(lock_payload) =
+        next_lock_payload_until(&mut eventloop, &topics.node_lock, confirm_deadline).await?
+    {
+        if lock_payload.instance_id == instance_id && lock_payload.status == NodeLockStatus::Online
+        {
+            saw_self_online = true;
+            continue;
+        }
+
+        if lock_payload.is_online_for_other_instance(&instance_id) {
+            client.disconnect().await.ok();
+            return Err(anyhow!(
+                "node_id `{}` lock was overwritten by instance `{}` during confirmation",
+                identity.node_id,
+                lock_payload.instance_id
+            ));
+        }
+    }
+
+    if !saw_self_online {
+        publish_node_lock_payload(&client, topics, &offline_payload).await?;
+        client.disconnect().await.ok();
+        return Err(anyhow!(
+            "failed to confirm online node lock for node_id `{}`",
+            identity.node_id
+        ));
+    }
+
+    let (loss_tx, loss_rx) = mpsc::unbounded_channel();
+    let lock_topic = topics.node_lock.clone();
+    let instance_id_for_task = instance_id.clone();
+    let eventloop_task = tokio::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::Publish(publish))) if publish.topic == lock_topic => {
+                    match parse_node_lock_payload(&publish.payload) {
+                        Ok(lock_payload)
+                            if lock_payload.is_online_for_other_instance(&instance_id_for_task) =>
+                        {
+                            let _ = loss_tx.send(format!(
+                                "node lock `{}` was overwritten by instance `{}` on host `{}`",
+                                lock_topic, lock_payload.instance_id, lock_payload.host_name
+                            ));
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            let _ = loss_tx.send(format!(
+                                "failed to parse node lock payload on `{}`: {error:#}",
+                                lock_topic
+                            ));
+                            break;
+                        }
+                    }
+                }
+                Ok(Event::Outgoing(Outgoing::Disconnect)) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    let _ = loss_tx.send(format!(
+                        "node lock MQTT connection failed for topic `{}`: {error:#}",
+                        lock_topic
+                    ));
+                    break;
+                }
+            }
+        }
+    });
+
+    info!(
+        node_id = %identity.node_id,
+        instance_id = %instance_id,
+        topic = %topics.node_lock,
+        "acquired node lock"
+    );
+
+    Ok((
+        NodeLockGuard {
+            client,
+            lock_topic: topics.node_lock.clone(),
+            offline_payload: offline_payload_bytes,
+            eventloop_task,
+        },
+        loss_rx,
+    ))
+}
+
+async fn publish_node_lock_payload(
+    client: &AsyncClient,
+    topics: &Topics,
+    payload: &NodeLockPayload,
+) -> Result<()> {
+    let payload = serde_json::to_vec(payload).context("failed to serialize node lock payload")?;
+    client
+        .publish(topics.node_lock.clone(), QoS::AtLeastOnce, true, payload)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to publish node lock payload to `{}`",
+                topics.node_lock
+            )
+        })?;
+    Ok(())
+}
+
+async fn wait_for_latest_lock_payload(
+    eventloop: &mut rumqttc::EventLoop,
+    lock_topic: &str,
+    duration: Duration,
+) -> Result<Option<NodeLockPayload>> {
+    let deadline = Instant::now() + duration;
+    let mut latest = None;
+
+    while let Some(lock_payload) = next_lock_payload_until(eventloop, lock_topic, deadline).await? {
+        latest = Some(lock_payload);
+    }
+
+    Ok(latest)
+}
+
+async fn next_lock_payload_until(
+    eventloop: &mut rumqttc::EventLoop,
+    lock_topic: &str,
+    deadline: Instant,
+) -> Result<Option<NodeLockPayload>> {
+    loop {
+        let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(None);
+        };
+
+        match tokio::time::timeout(timeout, eventloop.poll()).await {
+            Ok(Ok(Event::Incoming(Packet::Publish(publish)))) if publish.topic == lock_topic => {
+                return parse_node_lock_payload(&publish.payload).map(Some);
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Err(error).context("failed while polling node lock MQTT events");
+            }
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
+fn parse_node_lock_payload(payload: &[u8]) -> Result<NodeLockPayload> {
+    serde_json::from_slice(payload).context("invalid node lock payload")
+}
+
+fn build_lock_instance_id(identity: &Identity) -> String {
+    let started_at_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let host_slug = match slugify(&identity.host_name) {
+        slug if slug.is_empty() => "host".to_string(),
+        slug => slug,
+    };
+
+    format!(
+        "{started_at_nanos:032x}-{:08x}-{host_slug}",
+        std::process::id()
+    )
 }
 
 fn init_tracing(bootstrap: &BootstrapOptions) -> Result<()> {
@@ -715,42 +1095,9 @@ async fn publish_online_availability_if_needed(
     }
 }
 
-async fn refresh_discovery_layout(
-    context: &PublishContext<'_>,
-    gpu_state: Option<&GpuState>,
-    disk_state: &DiskState,
-    discovery_state: &mut DiscoveryState,
-    force: bool,
-) {
-    let next_layout = DiscoveryLayout::from_states(gpu_state, disk_state);
-    if !force && discovery_state.last_layout.as_ref() == Some(&next_layout) {
-        return;
-    }
-
-    if let Err(error) = publish_discovery_if_needed(
-        context.client,
-        DiscoveryPublishArgs {
-            config: context.config,
-            identity: context.identity,
-            topics: context.topics,
-            gpu_state,
-            disk_state,
-        },
-        &mut discovery_state.last_payload,
-        force,
-    )
-    .await
-    {
-        error!(%error, "failed to publish discovery payload");
-        discovery_state.last_payload = None;
-        discovery_state.last_layout = None;
-    } else {
-        discovery_state.last_layout = Some(next_layout);
-    }
-}
-
 async fn publish_full_snapshot(
     context: &PublishContext<'_>,
+    static_snapshot: StaticSnapshot,
     snapshot: FullSnapshot,
     discovery_state: &mut DiscoveryState,
     published_states: &mut PublishedStates,
@@ -763,6 +1110,7 @@ async fn publish_full_snapshot(
         gpu_state,
         memory_state,
         disk_state,
+        network_state,
     } = snapshot;
 
     publish_online_availability_if_needed(
@@ -771,14 +1119,25 @@ async fn publish_full_snapshot(
         availability_online_pending,
     )
     .await;
-    refresh_discovery_layout(
-        context,
-        gpu_state.as_ref(),
-        &disk_state,
-        discovery_state,
+    if let Err(error) = publish_discovery_if_needed(
+        context.client,
+        DiscoveryPublishArgs {
+            config: context.config,
+            identity: context.identity,
+            topics: context.topics,
+            gpu_info: static_snapshot.gpu_info.as_ref(),
+            disk_info: &static_snapshot.disk_info,
+            network_info: &static_snapshot.network_info,
+        },
+        &mut discovery_state.last_payload,
         force_discovery,
     )
-    .await;
+    .await
+    {
+        error!(%error, "failed to publish discovery payload");
+        discovery_state.last_payload = None;
+    }
+    publish_static_info(context.client, context.topics, &static_snapshot).await;
 
     if let Err(error) = publish_cpu_state(context.client, context.topics, &cpu_state).await {
         error!(%error, "failed to publish CPU state");
@@ -817,6 +1176,53 @@ async fn publish_full_snapshot(
         published_states.disk.clear();
     } else {
         published_states.disk.mark_published(disk_state);
+    }
+
+    if let Err(error) = publish_network_state(context.client, context.topics, &network_state).await
+    {
+        error!(%error, "failed to publish network state");
+        published_states.network.clear();
+    } else {
+        published_states.network.mark_published(network_state);
+    }
+}
+
+async fn publish_static_info(client: &AsyncClient, topics: &Topics, snapshot: &StaticSnapshot) {
+    if let Err(error) = publish_host_info_state(client, topics, &snapshot.host_info).await {
+        error!(%error, "failed to publish host info state");
+    }
+
+    if let Err(error) = publish_cpu_info_state(client, topics, &snapshot.cpu_info).await {
+        error!(%error, "failed to publish CPU info state");
+    }
+
+    if let Some(gpu_info) = snapshot.gpu_info.as_ref()
+        && let Err(error) = publish_gpu_info_state(client, topics, gpu_info).await
+    {
+        error!(%error, "failed to publish GPU info state");
+    }
+
+    if let Err(error) = publish_memory_info_state(client, topics, &snapshot.memory_info).await {
+        error!(%error, "failed to publish memory info state");
+    }
+
+    if let Err(error) = publish_disk_info_state(client, topics, &snapshot.disk_info).await {
+        error!(%error, "failed to publish disk info state");
+    }
+
+    if let Err(error) = publish_network_info_state(client, topics, &snapshot.network_info).await {
+        error!(%error, "failed to publish network info state");
+    }
+}
+
+fn collect_static_snapshot(collector: &Collector) -> StaticSnapshot {
+    StaticSnapshot {
+        host_info: collector.host_info(),
+        cpu_info: collector.cpu_info(),
+        gpu_info: collector.gpu_info(),
+        memory_info: collector.memory_info(),
+        disk_info: collector.disk_info(),
+        network_info: collector.network_info(),
     }
 }
 

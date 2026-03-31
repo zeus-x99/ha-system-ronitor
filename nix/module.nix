@@ -145,6 +145,7 @@ in
           cpu.interval_secs = 1;
           gpu.interval_secs = 1;
           memory.interval_secs = 5;
+          network.interval_secs = 1;
           uptime.interval_secs = 300;
           disk.interval_secs = 30;
         };
@@ -175,6 +176,7 @@ in
             cpu.interval_secs = 1;
             gpu.interval_secs = 1;
             memory.interval_secs = 5;
+            network.interval_secs = 1;
             uptime.interval_secs = 300;
             disk.interval_secs = 30;
           };
@@ -210,9 +212,11 @@ in
             node_id = "router";
             name = "Router System Monitor";
           };
+          network.include_interfaces = [ "Ethernet" "Wi-Fi" ];
           sampling.cpu.interval_secs = 1;
           sampling.gpu.interval_secs = 1;
           sampling.memory.interval_secs = 5;
+          sampling.network.interval_secs = 1;
           sampling.uptime.interval_secs = 300;
           sampling.disk.interval_secs = 30;
           thresholds.cpu.usage_pct = 1.0;

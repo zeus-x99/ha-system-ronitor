@@ -19,6 +19,8 @@ pub struct FileConfig {
     pub home_assistant: HomeAssistantConfig,
     #[serde(default, skip_serializing_if = "DeviceConfig::is_empty")]
     pub device: DeviceConfig,
+    #[serde(default, skip_serializing_if = "NetworkConfig::is_empty")]
+    pub network: NetworkConfig,
     #[serde(default, skip_serializing_if = "SamplingConfig::is_empty")]
     pub sampling: SamplingConfig,
     #[serde(default, skip_serializing_if = "ThresholdsConfig::is_empty")]
@@ -53,6 +55,13 @@ pub struct DeviceConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_interfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingConfig {
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub cpu: MetricSamplingConfig,
@@ -64,6 +73,8 @@ pub struct SamplingConfig {
     pub uptime: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub disk: MetricSamplingConfig,
+    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
+    pub network: MetricSamplingConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -219,6 +230,12 @@ impl DeviceConfig {
     }
 }
 
+impl NetworkConfig {
+    fn is_empty(&self) -> bool {
+        self.include_interfaces.is_empty()
+    }
+}
+
 impl SamplingConfig {
     fn is_empty(&self) -> bool {
         self.cpu.is_empty()
@@ -226,6 +243,7 @@ impl SamplingConfig {
             && self.memory.is_empty()
             && self.uptime.is_empty()
             && self.disk.is_empty()
+            && self.network.is_empty()
     }
 }
 

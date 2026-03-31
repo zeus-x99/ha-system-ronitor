@@ -1,12 +1,14 @@
 use sysinfo::System;
 
 use crate::config::Config;
-use crate::shared::util::slugify;
+use crate::shared::util::{mqtt_discovery_id, slugify};
 
 #[derive(Debug, Clone)]
 pub struct Identity {
     pub node_id: String,
     pub device_id: String,
+    pub discovery_object_id: String,
+    pub entity_id_prefix: String,
     pub device_name: String,
     pub host_name: String,
     pub os_name: String,
@@ -28,10 +30,15 @@ impl Identity {
             .device_name
             .clone()
             .unwrap_or_else(|| format!("{host_name} System Monitor"));
+        let device_id = format!("ha-system-ronitor-{node_id}");
+        let discovery_object_id = mqtt_discovery_id(&device_id);
+        let entity_id_prefix = slugify(&discovery_object_id);
 
         Self {
-            node_id: node_id.clone(),
-            device_id: format!("ha-system-ronitor-{node_id}"),
+            node_id,
+            device_id,
+            discovery_object_id,
+            entity_id_prefix,
             device_name,
             host_name,
             os_name,
