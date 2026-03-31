@@ -8,7 +8,7 @@ use rumqttc::{AsyncClient, MqttOptions, QoS};
 async fn main() -> Result<()> {
     let config = load_config(&BootstrapOptions::from_current_process())?;
 
-    let mut args = std::env::args().skip(1);
+    let mut args = user_args().into_iter();
     let topic = args
         .next()
         .context("expected topic as the first argument")?;
@@ -46,4 +46,34 @@ async fn main() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     Ok(())
+}
+
+fn user_args() -> Vec<String> {
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    let mut passthrough = false;
+
+    for arg in std::env::args().skip(1) {
+        if passthrough {
+            args.push(arg);
+            continue;
+        }
+
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        match arg.as_str() {
+            "--" => {
+                passthrough = true;
+            }
+            "--config-dir" | "--log-dir" => {
+                skip_next = true;
+            }
+            _ => args.push(arg),
+        }
+    }
+
+    args
 }

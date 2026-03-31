@@ -178,8 +178,17 @@ homeassistant/device/<node_id>/config
 [shutdown]
 enable_button = true
 payload = "shutdown"
+cancel_payload = "cancel"
+delay_secs = 30
 dry_run = true
 ```
+
+这时 Home Assistant 会出现两个按钮：
+
+- `shutdown_host`：收到命令后先进入延迟倒计时，再执行真正关机
+- `cancel_shutdown`：在倒计时期间取消这次待执行的关机
+
+如果你想保持原来的“立即关机”，可以把 `delay_secs` 设为 `0`。
 
 验证按钮行为正常后，再改成真正执行关机：
 
@@ -187,6 +196,8 @@ dry_run = true
 [shutdown]
 enable_button = true
 payload = "shutdown"
+cancel_payload = "cancel"
+delay_secs = 30
 dry_run = false
 ```
 

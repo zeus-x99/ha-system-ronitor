@@ -34,10 +34,14 @@ pub struct DeviceDiscoveryPayload {
 
 #[derive(Debug, Clone, Serialize)]
 struct DeviceInfo {
+    #[serde(rename = "ids")]
     identifiers: Vec<String>,
     name: String,
+    #[serde(rename = "mf")]
     manufacturer: String,
+    #[serde(rename = "mdl")]
     model: String,
+    #[serde(rename = "sw")]
     sw_version: String,
 }
 
@@ -513,8 +517,17 @@ fn build_components(
     );
 
     if config.enable_shutdown_button {
-        components.insert(
-            "shutdown_host".to_string(),
+        let shutdown_button = if config.shutdown_delay_secs > 0 {
+            Component::button(
+                identity,
+                "shutdown_host",
+                "Schedule Shutdown",
+                topics.shutdown_command.clone(),
+                config.shutdown_payload.clone(),
+            )
+            .with_entity_category("config")
+            .with_icon("mdi:power-sleep")
+        } else {
             Component::button(
                 identity,
                 "shutdown_host",
@@ -523,8 +536,25 @@ fn build_components(
                 config.shutdown_payload.clone(),
             )
             .with_entity_category("config")
-            .with_icon("mdi:power"),
-        );
+            .with_icon("mdi:power")
+        };
+
+        components.insert("shutdown_host".to_string(), shutdown_button);
+
+        if config.shutdown_delay_secs > 0 {
+            components.insert(
+                "cancel_shutdown".to_string(),
+                Component::button(
+                    identity,
+                    "cancel_shutdown",
+                    "Cancel Pending Shutdown",
+                    topics.shutdown_command.clone(),
+                    config.shutdown_cancel_payload.clone(),
+                )
+                .with_entity_category("config")
+                .with_icon("mdi:cancel"),
+            );
+        }
     }
 
     for (interface_id, interface) in &network_info.interfaces {

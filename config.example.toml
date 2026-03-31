@@ -85,9 +85,13 @@ change_mib = 8
 change_mib = 32
 
 [shutdown]
-# 是否在 Home Assistant 中暴露“关机”按钮实体。
+# 是否在 Home Assistant 中暴露“关机 / 取消关机”按钮实体。
 enable_button = false
-# 触发关机动作时要求收到的 MQTT payload。
+# 按下“关机”按钮后写入 MQTT command topic 的 payload。
 payload = "shutdown"
+# 按下“取消关机”按钮后写入同一 command topic 的 payload。
+cancel_payload = "cancel"
+# 收到关机命令后延迟多少秒再真正执行；设为 0 表示立即关机。
+delay_secs = 30
 # 为 true 时只记录关机请求，不真正执行关机。
 dry_run = false

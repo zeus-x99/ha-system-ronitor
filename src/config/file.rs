@@ -120,6 +120,8 @@ pub struct MetricThresholdConfig {
 pub struct ShutdownConfig {
     pub enable_button: Option<bool>,
     pub payload: Option<String>,
+    pub cancel_payload: Option<String>,
+    pub delay_secs: Option<u64>,
     pub dry_run: Option<bool>,
 }
 
@@ -279,7 +281,11 @@ impl MetricThresholdConfig {
 
 impl ShutdownConfig {
     fn is_empty(&self) -> bool {
-        self.enable_button.is_none() && self.payload.is_none() && self.dry_run.is_none()
+        self.enable_button.is_none()
+            && self.payload.is_none()
+            && self.cancel_payload.is_none()
+            && self.delay_secs.is_none()
+            && self.dry_run.is_none()
     }
 }
 

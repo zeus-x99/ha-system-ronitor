@@ -31,6 +31,8 @@ pub struct Config {
     pub network_include_interfaces: Vec<String>,
     pub enable_shutdown_button: bool,
     pub shutdown_payload: String,
+    pub shutdown_cancel_payload: String,
+    pub shutdown_delay_secs: u64,
     pub shutdown_dry_run: bool,
     pub cpu_interval_secs: u64,
     pub gpu_interval_secs: u64,
@@ -75,6 +77,32 @@ impl Config {
             shutdown,
         } = file_config;
 
+        let shutdown_payload = value_or_default(shutdown.payload, "shutdown".to_string())
+            .trim()
+            .to_string();
+        let shutdown_cancel_payload =
+            value_or_default(shutdown.cancel_payload, "cancel".to_string())
+                .trim()
+                .to_string();
+
+        if shutdown_payload.is_empty() {
+            return Err(anyhow!(
+                "configuration value `shutdown.payload` must not be empty"
+            ));
+        }
+
+        if shutdown_cancel_payload.is_empty() {
+            return Err(anyhow!(
+                "configuration value `shutdown.cancel_payload` must not be empty"
+            ));
+        }
+
+        if shutdown_payload == shutdown_cancel_payload {
+            return Err(anyhow!(
+                "configuration values `shutdown.payload` and `shutdown.cancel_payload` must be different"
+            ));
+        }
+
         Ok(Self {
             config_dir: bootstrap.config_dir.clone(),
             log_dir: bootstrap.log_dir.clone(),
@@ -103,7 +131,9 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .collect(),
             enable_shutdown_button: value_or_default(shutdown.enable_button, false),
-            shutdown_payload: value_or_default(shutdown.payload, "shutdown".to_string()),
+            shutdown_payload,
+            shutdown_cancel_payload,
+            shutdown_delay_secs: value_or_default(shutdown.delay_secs, 30),
             shutdown_dry_run: value_or_default(shutdown.dry_run, false),
             cpu_interval_secs: value_or_default(sampling.cpu.interval_secs, 1),
             gpu_interval_secs: value_or_default(sampling.gpu.interval_secs, 1),
@@ -205,6 +235,8 @@ mod tests {
             shutdown: ShutdownConfig {
                 enable_button: Some(true),
                 payload: Some("poweroff".to_string()),
+                cancel_payload: Some("cancel".to_string()),
+                delay_secs: Some(90),
                 dry_run: Some(true),
             },
         };
@@ -239,6 +271,8 @@ mod tests {
         assert_eq!(config.disk_change_threshold_mib, 64);
         assert!(config.enable_shutdown_button);
         assert_eq!(config.shutdown_payload, "poweroff");
+        assert_eq!(config.shutdown_cancel_payload, "cancel");
+        assert_eq!(config.shutdown_delay_secs, 90);
         assert!(config.shutdown_dry_run);
     }
 
@@ -274,7 +308,35 @@ mod tests {
         assert_eq!(config.disk_change_threshold_mib, 32);
         assert!(!config.enable_shutdown_button);
         assert_eq!(config.shutdown_payload, "shutdown");
+        assert_eq!(config.shutdown_cancel_payload, "cancel");
+        assert_eq!(config.shutdown_delay_secs, 30);
         assert!(!config.shutdown_dry_run);
+    }
+
+    #[test]
+    fn duplicate_shutdown_payloads_are_rejected() {
+        let error = Config::from_file(
+            &BootstrapOptions::default(),
+            FileConfig {
+                mqtt: MqttConfig {
+                    host: Some("10.0.0.10".to_string()),
+                    ..MqttConfig::default()
+                },
+                shutdown: ShutdownConfig {
+                    payload: Some("shutdown".to_string()),
+                    cancel_payload: Some("shutdown".to_string()),
+                    ..ShutdownConfig::default()
+                },
+                ..FileConfig::default()
+            },
+        )
+        .expect_err("duplicate shutdown payloads should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("`shutdown.payload` and `shutdown.cancel_payload` must be different")
+        );
     }
 
     #[test]

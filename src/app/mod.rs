@@ -11,7 +11,7 @@ use chrono::Utc;
 use rumqttc::mqttbytes::v4::SubscribeReasonCode;
 use rumqttc::{AsyncClient, Event, Outgoing, Packet, QoS};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -61,6 +61,24 @@ struct StaticSnapshot {
     memory_info: MemoryInfoState,
     disk_info: DiskInfoState,
     network_info: NetworkInfoState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownCommandKind {
+    Schedule,
+    Cancel,
+}
+
+#[derive(Debug)]
+struct PendingShutdown {
+    request_id: u64,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShutdownElapsed {
+    request_id: u64,
+    delay_secs: u64,
 }
 
 const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -333,6 +351,8 @@ where
         memory_change_threshold_mib = config.memory_change_threshold_mib,
         disk_change_threshold_mib = config.disk_change_threshold_mib,
         enable_shutdown_button = config.enable_shutdown_button,
+        shutdown_delay_secs = config.shutdown_delay_secs,
+        shutdown_cancel_payload = config.shutdown_cancel_payload,
         shutdown_dry_run = config.shutdown_dry_run,
         "starting Home Assistant system monitor"
     );
@@ -375,15 +395,42 @@ where
     let mut connected = false;
     let mut availability_online_pending = false;
     let mut subscription_state = SubscriptionState::default();
+    let (shutdown_elapsed_tx, mut shutdown_elapsed_rx) =
+        mpsc::unbounded_channel::<ShutdownElapsed>();
+    let mut next_shutdown_request_id = 0_u64;
+    let mut pending_shutdown: Option<PendingShutdown> = None;
     let mut shutdown_signal = Box::pin(shutdown_signal);
 
     loop {
         tokio::select! {
+            maybe_elapsed = shutdown_elapsed_rx.recv() => {
+                let Some(elapsed) = maybe_elapsed else {
+                    continue;
+                };
+
+                let Some(current) = pending_shutdown.as_ref() else {
+                    continue;
+                };
+
+                if current.request_id != elapsed.request_id {
+                    continue;
+                }
+
+                pending_shutdown = None;
+                warn!(
+                    delay_secs = elapsed.delay_secs,
+                    "scheduled shutdown delay elapsed, executing shutdown"
+                );
+                execute_shutdown_request(config.shutdown_dry_run).await;
+            }
             maybe_reason = node_lock_loss_rx.recv() => {
                 let reason = maybe_reason.unwrap_or_else(|| {
                     format!("node lock task for node_id `{}` stopped unexpectedly", identity.node_id)
                 });
                 error!(%reason, node_id = %identity.node_id, "node lock lost, stopping service");
+                if cancel_pending_shutdown(&mut pending_shutdown) {
+                    info!("cleared pending shutdown because node lock was lost");
+                }
                 if connected {
                     publish_availability(&client, &topics, false).await?;
                 }
@@ -393,6 +440,9 @@ where
             }
             _ = &mut shutdown_signal => {
                 info!("shutdown signal received");
+                if cancel_pending_shutdown(&mut pending_shutdown) {
+                    info!("cleared pending shutdown because service is stopping");
+                }
                 if connected {
                     publish_availability(&client, &topics, false).await?;
                 }
@@ -454,26 +504,43 @@ where
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if config.enable_shutdown_button
                             && publish.topic == topics.shutdown_command
-                            && publish.payload.as_ref() == config.shutdown_payload.as_bytes()
                         {
-                            warn!("shutdown command received from MQTT");
-
-                            match tokio::task::spawn_blocking({
-                                let dry_run = config.shutdown_dry_run;
-                                move || shutdown_host(dry_run)
-                            }).await {
-                                Ok(Ok(())) => {
-                                    if config.shutdown_dry_run {
-                                        warn!("shutdown dry-run enabled; host shutdown skipped");
+                            match parse_shutdown_command(
+                                &config.shutdown_payload,
+                                &config.shutdown_cancel_payload,
+                                publish.payload.as_ref(),
+                            ) {
+                                Some(ShutdownCommandKind::Schedule) => {
+                                    if config.shutdown_delay_secs == 0 {
+                                        warn!("immediate shutdown command received from MQTT");
+                                        execute_shutdown_request(config.shutdown_dry_run).await;
                                     } else {
-                                        warn!("shutdown command executed");
+                                        let replaced = schedule_shutdown(
+                                            &mut pending_shutdown,
+                                            &mut next_shutdown_request_id,
+                                            config.shutdown_delay_secs,
+                                            &shutdown_elapsed_tx,
+                                        );
+                                        warn!(
+                                            delay_secs = config.shutdown_delay_secs,
+                                            replaced_existing = replaced,
+                                            "scheduled shutdown command received from MQTT"
+                                        );
                                     }
-                                }
-                                Ok(Err(error)) => error!(%error, "failed to execute shutdown command"),
-                                Err(error) => error!(%error, "shutdown task failed"),
-                            }
 
-                            continue;
+                                    continue;
+                                }
+                                Some(ShutdownCommandKind::Cancel) => {
+                                    if cancel_pending_shutdown(&mut pending_shutdown) {
+                                        warn!("pending shutdown canceled from MQTT");
+                                    } else {
+                                        info!("shutdown cancel requested, but no pending shutdown exists");
+                                    }
+
+                                    continue;
+                                }
+                                None => {}
+                            }
                         }
 
                         if !is_home_assistant_birth_message(&topics, &publish) {
@@ -1004,6 +1071,65 @@ fn build_lock_instance_id(identity: &Identity) -> String {
     )
 }
 
+async fn execute_shutdown_request(dry_run: bool) {
+    match tokio::task::spawn_blocking(move || shutdown_host(dry_run)).await {
+        Ok(Ok(())) => {
+            if dry_run {
+                warn!("shutdown dry-run enabled; host shutdown skipped");
+            } else {
+                warn!("shutdown command executed");
+            }
+        }
+        Ok(Err(error)) => error!(%error, "failed to execute shutdown command"),
+        Err(error) => error!(%error, "shutdown task failed"),
+    }
+}
+
+fn parse_shutdown_command(
+    shutdown_payload: &str,
+    cancel_payload: &str,
+    payload: &[u8],
+) -> Option<ShutdownCommandKind> {
+    if payload == shutdown_payload.as_bytes() {
+        Some(ShutdownCommandKind::Schedule)
+    } else if payload == cancel_payload.as_bytes() {
+        Some(ShutdownCommandKind::Cancel)
+    } else {
+        None
+    }
+}
+
+fn schedule_shutdown(
+    pending_shutdown: &mut Option<PendingShutdown>,
+    next_request_id: &mut u64,
+    delay_secs: u64,
+    elapsed_tx: &UnboundedSender<ShutdownElapsed>,
+) -> bool {
+    let replaced = cancel_pending_shutdown(pending_shutdown);
+    *next_request_id = next_request_id.wrapping_add(1);
+    let request_id = *next_request_id;
+    let elapsed_tx = elapsed_tx.clone();
+    let task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+        let _ = elapsed_tx.send(ShutdownElapsed {
+            request_id,
+            delay_secs,
+        });
+    });
+
+    *pending_shutdown = Some(PendingShutdown { request_id, task });
+    replaced
+}
+
+fn cancel_pending_shutdown(pending_shutdown: &mut Option<PendingShutdown>) -> bool {
+    let Some(pending_shutdown) = pending_shutdown.take() else {
+        return false;
+    };
+
+    pending_shutdown.task.abort();
+    true
+}
+
 fn init_tracing(bootstrap: &BootstrapOptions) -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,rumqttc=warn".into());
@@ -1228,7 +1354,10 @@ fn collect_static_snapshot(collector: &Collector) -> StaticSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{SUBSCRIPTION_RETRY_INTERVAL, SubscriptionState, SubscriptionTarget};
+    use super::{
+        SUBSCRIPTION_RETRY_INTERVAL, ShutdownCommandKind, SubscriptionState, SubscriptionTarget,
+        parse_shutdown_command,
+    };
     use std::time::Instant;
 
     #[test]
@@ -1259,5 +1388,18 @@ mod tests {
 
         state.ha_status.last_request_at = Some(Instant::now() - SUBSCRIPTION_RETRY_INTERVAL);
         assert!(state.should_request(SubscriptionTarget::HomeAssistantStatus));
+    }
+
+    #[test]
+    fn shutdown_command_parser_distinguishes_schedule_and_cancel() {
+        assert_eq!(
+            parse_shutdown_command("shutdown", "cancel", b"shutdown"),
+            Some(ShutdownCommandKind::Schedule)
+        );
+        assert_eq!(
+            parse_shutdown_command("shutdown", "cancel", b"cancel"),
+            Some(ShutdownCommandKind::Cancel)
+        );
+        assert_eq!(parse_shutdown_command("shutdown", "cancel", b"noop"), None);
     }
 }

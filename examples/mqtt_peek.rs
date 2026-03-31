@@ -7,6 +7,7 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Packet, QoS};
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = load_config(&BootstrapOptions::from_current_process())?;
+    let topics = user_args();
 
     let mut options = MqttOptions::new(
         "ha-system-ronitor-peek",
@@ -17,14 +18,21 @@ async fn main() -> Result<()> {
         options.set_credentials(username, config.mqtt_password.unwrap_or_default());
     }
     options.set_keep_alive(Duration::from_secs(10));
+    options.set_max_packet_size(1024 * 1024, 1024 * 1024);
 
     let (client, mut eventloop) = AsyncClient::new(options, 10);
-    client
-        .subscribe("homeassistant/#", QoS::AtLeastOnce)
-        .await?;
-    client
-        .subscribe("monitor/system/#", QoS::AtLeastOnce)
-        .await?;
+    if topics.is_empty() {
+        client
+            .subscribe("homeassistant/#", QoS::AtLeastOnce)
+            .await?;
+        client
+            .subscribe("monitor/system/#", QoS::AtLeastOnce)
+            .await?;
+    } else {
+        for topic in topics {
+            client.subscribe(topic, QoS::AtLeastOnce).await?;
+        }
+    }
 
     let deadline = Instant::now() + Duration::from_secs(5);
 
@@ -46,4 +54,34 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn user_args() -> Vec<String> {
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    let mut passthrough = false;
+
+    for arg in std::env::args().skip(1) {
+        if passthrough {
+            args.push(arg);
+            continue;
+        }
+
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        match arg.as_str() {
+            "--" => {
+                passthrough = true;
+            }
+            "--config-dir" | "--log-dir" => {
+                skip_next = true;
+            }
+            _ => args.push(arg),
+        }
+    }
+
+    args
 }
