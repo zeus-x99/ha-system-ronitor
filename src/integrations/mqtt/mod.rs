@@ -115,13 +115,6 @@ pub async fn publish_discovery_if_needed(
         .await
         .context("failed to publish device discovery payload")?;
 
-    if let Some(legacy_topic) = args.topics.legacy_device_discovery.as_ref() {
-        client
-            .publish(legacy_topic.clone(), QoS::AtLeastOnce, true, Vec::new())
-            .await
-            .context("failed to clear legacy device discovery payload")?;
-    }
-
     *last_payload = Some(device_payload);
     info!(
         topic = %message.topic,

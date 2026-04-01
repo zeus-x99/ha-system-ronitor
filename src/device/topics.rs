@@ -4,7 +4,6 @@ use crate::device::Identity;
 #[derive(Debug, Clone)]
 pub struct Topics {
     pub device_discovery: String,
-    pub legacy_device_discovery: Option<String>,
     pub host_info_state: String,
     pub cpu_state: String,
     pub cpu_info_state: String,
@@ -26,18 +25,12 @@ pub struct Topics {
 
 impl Topics {
     pub fn from_identity(config: &Config, identity: &Identity) -> Self {
-        let legacy_device_discovery = format!(
-            "{}/device/{}/config",
-            config.discovery_prefix, identity.node_id
-        );
         let device_discovery = format!(
             "{}/device/{}/config",
             config.discovery_prefix, identity.discovery_object_id
         );
 
         Self {
-            legacy_device_discovery: (legacy_device_discovery != device_discovery)
-                .then_some(legacy_device_discovery),
             device_discovery,
             host_info_state: format!("{}/{}/host/info", config.topic_prefix, identity.node_id),
             cpu_state: format!("{}/{}/cpu/state", config.topic_prefix, identity.node_id),

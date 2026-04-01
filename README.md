@@ -172,6 +172,14 @@ homeassistant/device/<node_id>/config
 
 当前实现只维护这一套新的设备级 discovery，不再继续维护旧版逐实体 discovery 兼容层。
 
+运行时会遵循 Home Assistant 官方推荐方式：
+
+- 使用 `homeassistant/device/.../config` 设备级 discovery
+- 订阅 `homeassistant/status` birth 消息，在 Home Assistant 重连后重新发布 discovery
+- 不在正常运行路径里反复执行旧 discovery 清理
+
+如果未来需要从旧的单实体 discovery 迁移，建议按 Home Assistant 官方 MQTT 文档的一次性迁移流程单独处理，而不是放进主循环里长期执行。
+
 如果要启用关机按钮，可以这样设置：
 
 ```toml
