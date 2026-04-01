@@ -84,6 +84,14 @@ change_mib = 8
 # 磁盘已用/可用空间变化达到这个 MiB 数后，才发布新值。
 change_mib = 32
 
+[thresholds.network]
+# 网络速率变化达到这个字节每秒阈值后，才发布新值。
+# 默认 10240，也就是 10 KB/s。
+rate_change_bps = 10240
+# 网络累计上下行总量变化达到这个字节阈值后，才发布新值。
+# 默认 10240，也就是 10 KB。
+total_change_bytes = 10240
+
 [shutdown]
 # 是否在 Home Assistant 中暴露“关机 / 取消关机”按钮实体。
 enable_button = false

@@ -94,6 +94,8 @@ pub struct ThresholdsConfig {
     pub memory: MetricThresholdConfig,
     #[serde(default, skip_serializing_if = "MetricThresholdConfig::is_empty")]
     pub disk: MetricThresholdConfig,
+    #[serde(default, skip_serializing_if = "NetworkThresholdConfig::is_empty")]
+    pub network: NetworkThresholdConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -113,6 +115,13 @@ pub struct GpuThresholdConfig {
 #[serde(deny_unknown_fields)]
 pub struct MetricThresholdConfig {
     pub change_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkThresholdConfig {
+    pub rate_change_bps: Option<u64>,
+    pub total_change_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -257,7 +266,11 @@ impl MetricSamplingConfig {
 
 impl ThresholdsConfig {
     fn is_empty(&self) -> bool {
-        self.cpu.is_empty() && self.gpu.is_empty() && self.memory.is_empty() && self.disk.is_empty()
+        self.cpu.is_empty()
+            && self.gpu.is_empty()
+            && self.memory.is_empty()
+            && self.disk.is_empty()
+            && self.network.is_empty()
     }
 }
 
@@ -276,6 +289,12 @@ impl GpuThresholdConfig {
 impl MetricThresholdConfig {
     fn is_empty(&self) -> bool {
         self.change_mib.is_none()
+    }
+}
+
+impl NetworkThresholdConfig {
+    fn is_empty(&self) -> bool {
+        self.rate_change_bps.is_none() && self.total_change_bytes.is_none()
     }
 }
 

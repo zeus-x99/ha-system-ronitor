@@ -143,13 +143,20 @@ impl MemoryState {
 }
 
 impl NetworkState {
-    pub fn changed_from(&self, previous: &Self) -> bool {
-        if self.network_total_download != previous.network_total_download
-            || self.network_total_upload != previous.network_total_upload
+    pub fn changed_from(
+        &self,
+        previous: &Self,
+        rate_threshold_bytes_per_sec: f64,
+        total_threshold_bytes: u64,
+    ) -> bool {
+        if abs_diff_u64(self.network_total_download, previous.network_total_download)
+            >= total_threshold_bytes
+            || abs_diff_u64(self.network_total_upload, previous.network_total_upload)
+                >= total_threshold_bytes
             || abs_diff_f64(self.network_download_rate, previous.network_download_rate)
-                >= NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC
+                >= rate_threshold_bytes_per_sec
             || abs_diff_f64(self.network_upload_rate, previous.network_upload_rate)
-                >= NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC
+                >= rate_threshold_bytes_per_sec
             || self.interfaces.len() != previous.interfaces.len()
         {
             return true;
@@ -160,12 +167,14 @@ impl NetworkState {
                 return true;
             };
 
-            if interface.total_download != previous_interface.total_download
-                || interface.total_upload != previous_interface.total_upload
+            if abs_diff_u64(interface.total_download, previous_interface.total_download)
+                >= total_threshold_bytes
+                || abs_diff_u64(interface.total_upload, previous_interface.total_upload)
+                    >= total_threshold_bytes
                 || abs_diff_f64(interface.download_rate, previous_interface.download_rate)
-                    >= NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC
+                    >= rate_threshold_bytes_per_sec
                 || abs_diff_f64(interface.upload_rate, previous_interface.upload_rate)
-                    >= NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC
+                    >= rate_threshold_bytes_per_sec
             {
                 return true;
             }
@@ -230,4 +239,3 @@ fn option_abs_diff_f32(left: Option<f32>, right: Option<f32>) -> Option<f32> {
 
 const CPU_TEMPERATURE_CHANGE_THRESHOLD_C: f32 = 1.0;
 const GPU_TEMPERATURE_CHANGE_THRESHOLD_C: f32 = 1.0;
-const NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC: f64 = 1.0;

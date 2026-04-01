@@ -10,8 +10,8 @@ pub use bootstrap::BootstrapOptions;
 pub use file::{
     CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuThresholdConfig, DeviceConfig, FileConfig,
     GpuThresholdConfig, HomeAssistantConfig, MetricSamplingConfig, MetricThresholdConfig,
-    MqttConfig, NetworkConfig, SamplingConfig, ShutdownConfig, ThresholdsConfig,
-    load_config_file_from, seed_config_toml,
+    MqttConfig, NetworkConfig, NetworkThresholdConfig, SamplingConfig, ShutdownConfig,
+    ThresholdsConfig, load_config_file_from, seed_config_toml,
 };
 pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
@@ -45,7 +45,12 @@ pub struct Config {
     pub gpu_memory_change_threshold_mib: u64,
     pub memory_change_threshold_mib: u64,
     pub disk_change_threshold_mib: u64,
+    pub network_rate_change_threshold_bytes_per_sec: u64,
+    pub network_total_change_threshold_bytes: u64,
 }
+
+const DEFAULT_NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC: u64 = 10 * 1024;
+const DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES: u64 = 10 * 1024;
 
 pub fn load_config(bootstrap: &BootstrapOptions) -> Result<Config> {
     let config_directories = bootstrap.config_directories();
@@ -146,6 +151,14 @@ impl Config {
             gpu_memory_change_threshold_mib: value_or_default(thresholds.gpu.memory_change_mib, 8),
             memory_change_threshold_mib: value_or_default(thresholds.memory.change_mib, 8),
             disk_change_threshold_mib: value_or_default(thresholds.disk.change_mib, 32),
+            network_rate_change_threshold_bytes_per_sec: value_or_default(
+                thresholds.network.rate_change_bps,
+                DEFAULT_NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC,
+            ),
+            network_total_change_threshold_bytes: value_or_default(
+                thresholds.network.total_change_bytes,
+                DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES,
+            ),
         })
     }
 
@@ -159,6 +172,10 @@ impl Config {
 
     pub fn disk_change_threshold_bytes(&self) -> u64 {
         self.disk_change_threshold_mib * 1024 * 1024
+    }
+
+    pub fn network_rate_change_threshold_bytes_per_sec_f64(&self) -> f64 {
+        self.network_rate_change_threshold_bytes_per_sec as f64
     }
 }
 
@@ -231,6 +248,10 @@ mod tests {
                 disk: MetricThresholdConfig {
                     change_mib: Some(64),
                 },
+                network: NetworkThresholdConfig {
+                    rate_change_bps: Some(32 * 1024),
+                    total_change_bytes: Some(64 * 1024),
+                },
             },
             shutdown: ShutdownConfig {
                 enable_button: Some(true),
@@ -269,6 +290,11 @@ mod tests {
         assert_eq!(config.gpu_memory_change_threshold_mib, 16);
         assert_eq!(config.memory_change_threshold_mib, 12);
         assert_eq!(config.disk_change_threshold_mib, 64);
+        assert_eq!(
+            config.network_rate_change_threshold_bytes_per_sec,
+            32 * 1024
+        );
+        assert_eq!(config.network_total_change_threshold_bytes, 64 * 1024);
         assert!(config.enable_shutdown_button);
         assert_eq!(config.shutdown_payload, "poweroff");
         assert_eq!(config.shutdown_cancel_payload, "cancel");
@@ -306,6 +332,14 @@ mod tests {
         assert_eq!(config.gpu_memory_change_threshold_mib, 8);
         assert_eq!(config.memory_change_threshold_mib, 8);
         assert_eq!(config.disk_change_threshold_mib, 32);
+        assert_eq!(
+            config.network_rate_change_threshold_bytes_per_sec,
+            DEFAULT_NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC
+        );
+        assert_eq!(
+            config.network_total_change_threshold_bytes,
+            DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES
+        );
         assert!(!config.enable_shutdown_button);
         assert_eq!(config.shutdown_payload, "shutdown");
         assert_eq!(config.shutdown_cancel_payload, "cancel");

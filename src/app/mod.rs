@@ -859,7 +859,13 @@ where
                     .network
                     .state
                     .as_ref()
-                    .is_none_or(|previous| network_state.changed_from(previous));
+                    .is_none_or(|previous| {
+                        network_state.changed_from(
+                            previous,
+                            config.network_rate_change_threshold_bytes_per_sec_f64(),
+                            config.network_total_change_threshold_bytes,
+                        )
+                    });
 
                 publish_online_availability_if_needed(
                     &client,
