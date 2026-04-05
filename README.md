@@ -365,3 +365,44 @@ MQTT 调试示例：
 cargo run --example mqtt_peek
 cargo run --example mqtt_publish -- "monitor/system/test" "hello"
 ```
+
+## Tencent Cloud Lighthouse
+
+This project can optionally publish Tencent Cloud Lighthouse traffic package usage into the same
+Home Assistant device via MQTT discovery.
+
+Add these fields to `config.toml` when you want to enable it:
+
+```toml
+[lighthouse]
+enabled = true
+secret_id = "AKID..."
+secret_key = "..."
+region = "ap-chengdu"
+instance_id = "lhins-xxxxxxxx"
+# session_token = "..." # optional for STS credentials
+# endpoint = "lighthouse.tencentcloudapi.com"
+
+[sampling.lighthouse]
+interval_secs = 300
+```
+
+When enabled, the integration publishes these additional sensors:
+
+- `lighthouse_instance_id`
+- `lighthouse_package_id`
+- `lighthouse_used`
+- `lighthouse_total`
+- `lighthouse_remaining`
+- `lighthouse_overflow`
+- `lighthouse_usage`
+- `lighthouse_status`
+- `lighthouse_cycle_start`
+- `lighthouse_cycle_end`
+- `lighthouse_deadline`
+
+Notes:
+
+- `region` must match the Lighthouse instance region exactly, such as `ap-chengdu`.
+- Use a sub-account or temporary STS credentials with minimum permissions where possible.
+- If you already tested the API with credentials that were exposed in chat or logs, rotate them before production use.

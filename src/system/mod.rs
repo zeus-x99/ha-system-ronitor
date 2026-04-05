@@ -1,5 +1,6 @@
 pub mod collector;
 pub mod gpu;
+pub mod lighthouse;
 pub mod models;
 pub mod network;
 pub mod pawnio;

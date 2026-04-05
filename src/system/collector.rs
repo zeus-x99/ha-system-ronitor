@@ -1,16 +1,18 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use sysinfo::{Components, CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 use crate::config::Config;
 use crate::device::Identity;
 use crate::shared::util::disk_component_id;
 use crate::system::gpu::{GpuReader, GpuReading};
+use crate::system::lighthouse::LighthouseReader;
 use crate::system::models::{
     CpuInfoState, CpuState, DiskInfoPayload, DiskInfoState, DiskState, DiskStatePayload,
-    GpuInfoState, GpuState, HostInfoState, MemoryInfoState, MemoryState, NetworkInfoState,
-    NetworkState, UptimeState,
+    GpuInfoState, GpuState, HostInfoState, LighthouseState, MemoryInfoState, MemoryState,
+    NetworkInfoState, NetworkState, UptimeState,
 };
 use crate::system::network::NetworkReader;
 use crate::system::runtime::{CpuTemperatureReader, detect_gpu_temp_from_components};
@@ -25,6 +27,7 @@ pub struct Collector {
     components: Components,
     cpu_temperature_reader: CpuTemperatureReader,
     gpu_reader: GpuReader,
+    lighthouse_reader: Option<LighthouseReader>,
     network_reader: NetworkReader,
     host_info: HostInfoState,
     cpu_info: CpuInfoState,
@@ -38,7 +41,7 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub async fn new(identity: &Identity, config: &Config) -> Self {
+    pub async fn new(identity: &Identity, config: &Config) -> Result<Self> {
         let mut cpu_usage_system = System::new_with_specifics(
             RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
         );
@@ -54,6 +57,7 @@ impl Collector {
         let components = Components::new_with_refreshed_list();
         let mut cpu_temperature_reader = CpuTemperatureReader::new();
         let mut gpu_reader = GpuReader::new();
+        let lighthouse_reader = LighthouseReader::new(config)?;
         let network_reader = NetworkReader::new(&config.network_include_interfaces);
 
         let cpu_model = cpu_usage_system
@@ -78,13 +82,14 @@ impl Collector {
             .read()
             .map(|reading| gpu_info_from_reading(&reading));
 
-        Self {
+        Ok(Self {
             system,
             cpu_usage_system,
             disks,
             components,
             cpu_temperature_reader,
             gpu_reader,
+            lighthouse_reader,
             network_reader,
             host_info,
             cpu_info,
@@ -95,7 +100,7 @@ impl Collector {
             cpu_package_temp,
             gpu_temperature,
             last_runtime_refresh_at: Some(Instant::now()),
-        }
+        })
     }
 
     pub fn host_info(&self) -> HostInfoState {
@@ -206,6 +211,13 @@ impl Collector {
 
     pub fn sample_network(&mut self) -> NetworkState {
         self.network_reader.read()
+    }
+
+    pub async fn sample_lighthouse(&self) -> Result<Option<LighthouseState>> {
+        match &self.lighthouse_reader {
+            Some(reader) => reader.read().await,
+            None => Ok(None),
+        }
     }
 
     pub fn sample_all(

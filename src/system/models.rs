@@ -89,6 +89,22 @@ pub struct NetworkInterfaceStatePayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LighthouseState {
+    pub timestamp: String,
+    pub lighthouse_instance_id: String,
+    pub lighthouse_package_id: String,
+    pub lighthouse_used: u64,
+    pub lighthouse_total: u64,
+    pub lighthouse_remaining: u64,
+    pub lighthouse_overflow: u64,
+    pub lighthouse_usage: f64,
+    pub lighthouse_status: String,
+    pub lighthouse_cycle_start: String,
+    pub lighthouse_cycle_end: String,
+    pub lighthouse_deadline: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DiskInfoState {
     pub disks: BTreeMap<String, DiskInfoPayload>,
 }
@@ -221,6 +237,21 @@ impl DiskState {
     }
 }
 
+impl LighthouseState {
+    pub fn changed_from(&self, previous: &Self) -> bool {
+        self.lighthouse_instance_id != previous.lighthouse_instance_id
+            || self.lighthouse_package_id != previous.lighthouse_package_id
+            || self.lighthouse_used != previous.lighthouse_used
+            || self.lighthouse_total != previous.lighthouse_total
+            || self.lighthouse_remaining != previous.lighthouse_remaining
+            || self.lighthouse_overflow != previous.lighthouse_overflow
+            || self.lighthouse_status != previous.lighthouse_status
+            || self.lighthouse_cycle_start != previous.lighthouse_cycle_start
+            || self.lighthouse_cycle_end != previous.lighthouse_cycle_end
+            || self.lighthouse_deadline != previous.lighthouse_deadline
+    }
+}
+
 fn abs_diff_u64(left: u64, right: u64) -> u64 {
     left.abs_diff(right)
 }
@@ -239,3 +270,45 @@ fn option_abs_diff_f32(left: Option<f32>, right: Option<f32>) -> Option<f32> {
 
 const CPU_TEMPERATURE_CHANGE_THRESHOLD_C: f32 = 1.0;
 const GPU_TEMPERATURE_CHANGE_THRESHOLD_C: f32 = 1.0;
+
+#[cfg(test)]
+mod tests {
+    use super::LighthouseState;
+
+    fn sample_lighthouse_state() -> LighthouseState {
+        LighthouseState {
+            timestamp: "2026-04-05T00:00:00Z".to_string(),
+            lighthouse_instance_id: "lhins-example".to_string(),
+            lighthouse_package_id: "lhtfp-example".to_string(),
+            lighthouse_used: 1,
+            lighthouse_total: 10,
+            lighthouse_remaining: 9,
+            lighthouse_overflow: 0,
+            lighthouse_usage: 10.0,
+            lighthouse_status: "NETWORK_NORMAL".to_string(),
+            lighthouse_cycle_start: "2026-04-01T00:00:00Z".to_string(),
+            lighthouse_cycle_end: "2026-05-01T00:00:00Z".to_string(),
+            lighthouse_deadline: "2030-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn lighthouse_change_detection_ignores_timestamp_only_updates() {
+        let previous = sample_lighthouse_state();
+        let mut next = sample_lighthouse_state();
+        next.timestamp = "2026-04-05T00:05:00Z".to_string();
+
+        assert!(!next.changed_from(&previous));
+    }
+
+    #[test]
+    fn lighthouse_change_detection_tracks_usage_changes() {
+        let previous = sample_lighthouse_state();
+        let mut next = sample_lighthouse_state();
+        next.lighthouse_used = 2;
+        next.lighthouse_remaining = 8;
+        next.lighthouse_usage = 20.0;
+
+        assert!(next.changed_from(&previous));
+    }
+}

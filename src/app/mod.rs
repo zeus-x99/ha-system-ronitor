@@ -22,15 +22,16 @@ use crate::integrations::mqtt::{
     DiscoveryPublishArgs, build_lock_mqtt_options, build_mqtt_options,
     is_home_assistant_birth_message, publish_availability, publish_cpu_info_state,
     publish_cpu_state, publish_discovery_if_needed, publish_disk_info_state, publish_disk_state,
-    publish_gpu_info_state, publish_gpu_state, publish_host_info_state, publish_memory_info_state,
-    publish_memory_state, publish_network_info_state, publish_network_state,
-    publish_shutdown_state, publish_uptime_state,
+    publish_gpu_info_state, publish_gpu_state, publish_host_info_state, publish_lighthouse_state,
+    publish_memory_info_state, publish_memory_state, publish_network_info_state,
+    publish_network_state, publish_shutdown_state, publish_uptime_state,
 };
 use crate::shared::util::slugify;
 use crate::system::collector::Collector;
 use crate::system::models::{
     CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
-    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState, UptimeState,
+    LighthouseState, MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState,
+    UptimeState,
 };
 use crate::system::power::shutdown_host;
 
@@ -51,6 +52,7 @@ struct FullSnapshot {
     uptime_state: UptimeState,
     shutdown_state: ShutdownState,
     gpu_state: Option<GpuState>,
+    lighthouse_state: Option<LighthouseState>,
     memory_state: MemoryState,
     disk_state: DiskState,
     network_state: NetworkState,
@@ -154,6 +156,7 @@ struct PublishedStates {
     uptime: PublishedSlot<UptimeState>,
     shutdown: PublishedSlot<ShutdownState>,
     gpu: PublishedSlot<GpuState>,
+    lighthouse: PublishedSlot<LighthouseState>,
     memory: PublishedSlot<MemoryState>,
     disk: PublishedSlot<DiskState>,
     network: PublishedSlot<NetworkState>,
@@ -344,10 +347,14 @@ where
         log_dir = ?config.log_dir,
         cpu_interval_secs = config.cpu_interval_secs,
         gpu_interval_secs = config.gpu_interval_secs,
+        lighthouse_interval_secs = config.lighthouse_interval_secs,
         memory_interval_secs = config.memory_interval_secs,
         uptime_interval_secs = config.uptime_interval_secs,
         disk_interval_secs = config.disk_interval_secs,
         network_interval_secs = config.network_interval_secs,
+        lighthouse_enabled = config.lighthouse_enabled,
+        lighthouse_region = ?config.lighthouse_region,
+        lighthouse_instance_id = ?config.lighthouse_instance_id,
         network_include_interfaces = ?config.network_include_interfaces,
         cpu_change_threshold_pct = config.cpu_change_threshold_pct,
         gpu_usage_change_threshold_pct = config.gpu_usage_change_threshold_pct,
@@ -361,7 +368,7 @@ where
         "starting Home Assistant system monitor"
     );
 
-    let mut collector = Collector::new(&identity, &config).await;
+    let mut collector = Collector::new(&identity, &config).await?;
     let mut discovery_state = DiscoveryState::default();
     let mut published_states = PublishedStates::default();
     let mut mqtt_options = build_mqtt_options(&config, &identity, &topics);
@@ -380,6 +387,10 @@ where
 
     let mut gpu_interval = tokio::time::interval(Duration::from_secs(config.gpu_interval_secs));
     gpu_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    let mut lighthouse_interval =
+        tokio::time::interval(Duration::from_secs(config.lighthouse_interval_secs));
+    lighthouse_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut memory_interval =
         tokio::time::interval(Duration::from_secs(config.memory_interval_secs));
@@ -507,6 +518,7 @@ where
                             disk_state,
                             network_state,
                         ) = collector.sample_all();
+                        let lighthouse_state = sample_lighthouse_state(&collector).await;
                         let static_snapshot = collect_static_snapshot(&collector);
                         publish_full_snapshot(
                             &publish_context,
@@ -516,6 +528,7 @@ where
                                 uptime_state,
                                 shutdown_state: current_shutdown_state(pending_shutdown.as_ref()),
                                 gpu_state,
+                                lighthouse_state,
                                 memory_state,
                                 disk_state,
                                 network_state,
@@ -610,6 +623,7 @@ where
                             disk_state,
                             network_state,
                         ) = collector.sample_all();
+                        let lighthouse_state = sample_lighthouse_state(&collector).await;
                         let static_snapshot = collect_static_snapshot(&collector);
                         publish_full_snapshot(
                             &publish_context,
@@ -619,6 +633,7 @@ where
                                 uptime_state,
                                 shutdown_state: current_shutdown_state(pending_shutdown.as_ref()),
                                 gpu_state,
+                                lighthouse_state,
                                 memory_state,
                                 disk_state,
                                 network_state,
@@ -776,6 +791,42 @@ where
                     }
                 } else {
                     published_states.gpu.clear();
+                }
+            }
+            _ = lighthouse_interval.tick() => {
+                if !connected || !config.lighthouse_enabled {
+                    continue;
+                }
+
+                ensure_runtime_subscriptions(&client, &topics, &mut subscription_state).await;
+                publish_online_availability_if_needed(
+                    &client,
+                    &topics,
+                    &mut availability_online_pending,
+                )
+                .await;
+
+                let Some(lighthouse_state) = sample_lighthouse_state(&collector).await else {
+                    published_states.lighthouse.clear();
+                    continue;
+                };
+
+                let changed = published_states
+                    .lighthouse
+                    .state
+                    .as_ref()
+                    .is_none_or(|previous| lighthouse_state.changed_from(previous));
+                if !changed {
+                    continue;
+                }
+
+                if let Err(error) =
+                    publish_lighthouse_state(&client, &topics, &lighthouse_state).await
+                {
+                    error!(%error, "failed to publish lighthouse state");
+                    published_states.lighthouse.clear();
+                } else {
+                    published_states.lighthouse.mark_published(lighthouse_state);
                 }
             }
             _ = memory_interval.tick() => {
@@ -1367,6 +1418,7 @@ async fn publish_full_snapshot(
         uptime_state,
         shutdown_state,
         gpu_state,
+        lighthouse_state,
         memory_state,
         disk_state,
         network_state,
@@ -1436,6 +1488,19 @@ async fn publish_full_snapshot(
         published_states.gpu.clear();
     }
 
+    if let Some(lighthouse_state) = lighthouse_state {
+        if let Err(error) =
+            publish_lighthouse_state(context.client, context.topics, &lighthouse_state).await
+        {
+            error!(%error, "failed to publish lighthouse state");
+            published_states.lighthouse.clear();
+        } else {
+            published_states.lighthouse.mark_published(lighthouse_state);
+        }
+    } else {
+        published_states.lighthouse.clear();
+    }
+
     if let Err(error) = publish_memory_state(context.client, context.topics, &memory_state).await {
         error!(%error, "failed to publish memory state");
         published_states.memory.clear();
@@ -1495,6 +1560,16 @@ fn collect_static_snapshot(collector: &Collector) -> StaticSnapshot {
         memory_info: collector.memory_info(),
         disk_info: collector.disk_info(),
         network_info: collector.network_info(),
+    }
+}
+
+async fn sample_lighthouse_state(collector: &Collector) -> Option<LighthouseState> {
+    match collector.sample_lighthouse().await {
+        Ok(state) => state,
+        Err(error) => {
+            error!(%error, "failed to sample Tencent Cloud Lighthouse traffic package state");
+            None
+        }
     }
 }
 

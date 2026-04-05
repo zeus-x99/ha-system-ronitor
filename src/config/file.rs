@@ -19,6 +19,8 @@ pub struct FileConfig {
     pub home_assistant: HomeAssistantConfig,
     #[serde(default, skip_serializing_if = "DeviceConfig::is_empty")]
     pub device: DeviceConfig,
+    #[serde(default, skip_serializing_if = "LighthouseConfig::is_empty")]
+    pub lighthouse: LighthouseConfig,
     #[serde(default, skip_serializing_if = "NetworkConfig::is_empty")]
     pub network: NetworkConfig,
     #[serde(default, skip_serializing_if = "SamplingConfig::is_empty")]
@@ -55,6 +57,18 @@ pub struct DeviceConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct LighthouseConfig {
+    pub enabled: Option<bool>,
+    pub secret_id: Option<String>,
+    pub secret_key: Option<String>,
+    pub session_token: Option<String>,
+    pub endpoint: Option<String>,
+    pub region: Option<String>,
+    pub instance_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include_interfaces: Vec<String>,
@@ -67,6 +81,8 @@ pub struct SamplingConfig {
     pub cpu: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub gpu: MetricSamplingConfig,
+    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
+    pub lighthouse: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
     pub memory: MetricSamplingConfig,
     #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
@@ -241,6 +257,18 @@ impl DeviceConfig {
     }
 }
 
+impl LighthouseConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.secret_id.is_none()
+            && self.secret_key.is_none()
+            && self.session_token.is_none()
+            && self.endpoint.is_none()
+            && self.region.is_none()
+            && self.instance_id.is_none()
+    }
+}
+
 impl NetworkConfig {
     fn is_empty(&self) -> bool {
         self.include_interfaces.is_empty()
@@ -251,6 +279,7 @@ impl SamplingConfig {
     fn is_empty(&self) -> bool {
         self.cpu.is_empty()
             && self.gpu.is_empty()
+            && self.lighthouse.is_empty()
             && self.memory.is_empty()
             && self.uptime.is_empty()
             && self.disk.is_empty()

@@ -11,6 +11,7 @@ pub struct Topics {
     pub shutdown_state: String,
     pub gpu_state: String,
     pub gpu_info_state: String,
+    pub lighthouse_state: String,
     pub memory_state: String,
     pub memory_info_state: String,
     pub disk_state: String,
@@ -42,6 +43,10 @@ impl Topics {
             ),
             gpu_state: format!("{}/{}/gpu/state", config.topic_prefix, identity.node_id),
             gpu_info_state: format!("{}/{}/gpu/info", config.topic_prefix, identity.node_id),
+            lighthouse_state: format!(
+                "{}/{}/lighthouse/state",
+                config.topic_prefix, identity.node_id
+            ),
             memory_state: format!("{}/{}/memory/state", config.topic_prefix, identity.node_id),
             memory_info_state: format!("{}/{}/memory/info", config.topic_prefix, identity.node_id),
             disk_state: format!("{}/{}/disk/state", config.topic_prefix, identity.node_id),

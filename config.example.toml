@@ -33,6 +33,20 @@ topic_prefix = "monitor/system"
 # 不填写时，程序会使用“<主机名> System Monitor”。
 # name = "My Host System Monitor"
 
+[lighthouse]
+# Optional: enable Tencent Cloud Lighthouse traffic package monitoring.
+enabled = false
+# Required when enabled: SecretId / SecretKey for Tencent Cloud API.
+# secret_id = "AKID..."
+# secret_key = "..."
+# Optional when using STS temporary credentials.
+# session_token = "..."
+# Required when enabled: instance region and Lighthouse instance id.
+# region = "ap-chengdu"
+# instance_id = "lhins-xxxxxxxx"
+# Optional: override API endpoint for intl site or custom routing.
+# endpoint = "lighthouse.tencentcloudapi.com"
+
 [network]
 # 需要监控的网卡名称白名单。
 # 这里的名称必须和系统里的网卡名称一致，例如 Windows 常见的是 `Ethernet`、`Wi-Fi`。
@@ -47,6 +61,10 @@ interval_secs = 1
 [sampling.gpu]
 # GPU 采样与发布间隔，单位：秒。
 interval_secs = 1
+
+[sampling.lighthouse]
+# Tencent Cloud Lighthouse traffic package polling interval, in seconds.
+interval_secs = 300
 
 [sampling.memory]
 # 内存采样与发布间隔，单位：秒。

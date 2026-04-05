@@ -426,6 +426,164 @@ fn build_components(
         }
     }
 
+    if config.lighthouse_enabled {
+        components.insert(
+            "lighthouse_instance_id".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_instance_id",
+                "Tencent Cloud Lighthouse Instance ID",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_instance_id | default(none) }}",
+            )
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:cloud-outline"),
+        );
+
+        components.insert(
+            "lighthouse_package_id".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_package_id",
+                "Tencent Cloud Lighthouse Package ID",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_package_id | default(none) }}",
+            )
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:identifier"),
+        );
+
+        components.insert(
+            "lighthouse_used".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_used",
+                "Tencent Cloud Traffic Used",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_used | default(none) }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:download-network"),
+        );
+
+        components.insert(
+            "lighthouse_total".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_total",
+                "Tencent Cloud Traffic Total",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_total | default(none) }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:database"),
+        );
+
+        components.insert(
+            "lighthouse_remaining".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_remaining",
+                "Tencent Cloud Traffic Remaining",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_remaining | default(none) }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:gauge"),
+        );
+
+        components.insert(
+            "lighthouse_overflow".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_overflow",
+                "Tencent Cloud Traffic Overflow",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_overflow | default(none) }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:alert-circle-outline"),
+        );
+
+        components.insert(
+            "lighthouse_usage".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_usage",
+                "Tencent Cloud Traffic Usage",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_usage | default(none) }}",
+            )
+            .with_unit("%")
+            .with_state_class("measurement")
+            .with_precision(2)
+            .with_icon("mdi:percent"),
+        );
+
+        components.insert(
+            "lighthouse_status".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_status",
+                "Tencent Cloud Lighthouse Status",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_status | default(none) }}",
+            )
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:check-network-outline"),
+        );
+
+        components.insert(
+            "lighthouse_cycle_start".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_cycle_start",
+                "Tencent Cloud Lighthouse Cycle Start",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_cycle_start | default(none) }}",
+            )
+            .with_device_class("timestamp")
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:calendar-start"),
+        );
+
+        components.insert(
+            "lighthouse_cycle_end".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_cycle_end",
+                "Tencent Cloud Lighthouse Cycle End",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_cycle_end | default(none) }}",
+            )
+            .with_device_class("timestamp")
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:calendar-end"),
+        );
+
+        components.insert(
+            "lighthouse_deadline".to_string(),
+            Component::sensor(
+                identity,
+                "lighthouse_deadline",
+                "Tencent Cloud Lighthouse Deadline",
+                topics.lighthouse_state.clone(),
+                "{{ value_json.lighthouse_deadline | default(none) }}",
+            )
+            .with_device_class("timestamp")
+            .with_entity_category("diagnostic")
+            .with_icon("mdi:calendar-clock"),
+        );
+    }
+
     components.insert(
         "memory_used".to_string(),
         Component::sensor(

@@ -8,7 +8,8 @@ use crate::device::{Identity, Topics};
 use crate::integrations::home_assistant::discovery::build_device_discovery_message;
 use crate::system::models::{
     CpuInfoState, CpuState, DiskInfoState, DiskState, GpuInfoState, GpuState, HostInfoState,
-    MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState, UptimeState,
+    LighthouseState, MemoryInfoState, MemoryState, NetworkInfoState, NetworkState, ShutdownState,
+    UptimeState,
 };
 
 const MQTT_MAX_PACKET_SIZE: usize = 64 * 1024;
@@ -227,6 +228,21 @@ pub async fn publish_memory_info_state(
         state,
         true,
         "memory info payload",
+    )
+    .await
+}
+
+pub async fn publish_lighthouse_state(
+    client: &AsyncClient,
+    topics: &Topics,
+    state: &LighthouseState,
+) -> Result<()> {
+    publish_json(
+        client,
+        &topics.lighthouse_state,
+        state,
+        true,
+        "lighthouse state payload",
     )
     .await
 }

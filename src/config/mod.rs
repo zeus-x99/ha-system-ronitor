@@ -9,9 +9,9 @@ use anyhow::{Result, anyhow};
 pub use bootstrap::BootstrapOptions;
 pub use file::{
     CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuThresholdConfig, DeviceConfig, FileConfig,
-    GpuThresholdConfig, HomeAssistantConfig, MetricSamplingConfig, MetricThresholdConfig,
-    MqttConfig, NetworkConfig, NetworkThresholdConfig, SamplingConfig, ShutdownConfig,
-    ThresholdsConfig, load_config_file_from, seed_config_toml,
+    GpuThresholdConfig, HomeAssistantConfig, LighthouseConfig, MetricSamplingConfig,
+    MetricThresholdConfig, MqttConfig, NetworkConfig, NetworkThresholdConfig, SamplingConfig,
+    ShutdownConfig, ThresholdsConfig, load_config_file_from, seed_config_toml,
 };
 pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
@@ -28,6 +28,13 @@ pub struct Config {
     pub topic_prefix: String,
     pub node_id: Option<String>,
     pub device_name: Option<String>,
+    pub lighthouse_enabled: bool,
+    pub lighthouse_secret_id: Option<String>,
+    pub lighthouse_secret_key: Option<String>,
+    pub lighthouse_session_token: Option<String>,
+    pub lighthouse_endpoint: String,
+    pub lighthouse_region: Option<String>,
+    pub lighthouse_instance_id: Option<String>,
     pub network_include_interfaces: Vec<String>,
     pub enable_shutdown_button: bool,
     pub shutdown_payload: String,
@@ -36,6 +43,7 @@ pub struct Config {
     pub shutdown_dry_run: bool,
     pub cpu_interval_secs: u64,
     pub gpu_interval_secs: u64,
+    pub lighthouse_interval_secs: u64,
     pub memory_interval_secs: u64,
     pub uptime_interval_secs: u64,
     pub disk_interval_secs: u64,
@@ -49,6 +57,8 @@ pub struct Config {
     pub network_total_change_threshold_bytes: u64,
 }
 
+const DEFAULT_LIGHTHOUSE_ENDPOINT: &str = "lighthouse.tencentcloudapi.com";
+const DEFAULT_LIGHTHOUSE_INTERVAL_SECS: u64 = 300;
 const DEFAULT_NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC: u64 = 10 * 1024;
 const DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES: u64 = 10 * 1024;
 
@@ -76,6 +86,7 @@ impl Config {
             mqtt,
             home_assistant,
             device,
+            lighthouse,
             network,
             sampling,
             thresholds,
@@ -108,6 +119,24 @@ impl Config {
             ));
         }
 
+        let lighthouse_enabled = value_or_default(lighthouse.enabled, false);
+        let lighthouse_secret_id = trim_optional(lighthouse.secret_id);
+        let lighthouse_secret_key = trim_optional(lighthouse.secret_key);
+        let lighthouse_session_token = trim_optional(lighthouse.session_token);
+        let lighthouse_endpoint = value_or_default(
+            trim_optional(lighthouse.endpoint),
+            DEFAULT_LIGHTHOUSE_ENDPOINT.to_string(),
+        );
+        let lighthouse_region = trim_optional(lighthouse.region);
+        let lighthouse_instance_id = trim_optional(lighthouse.instance_id);
+
+        if lighthouse_enabled {
+            required_trimmed_value(lighthouse_secret_id.as_ref(), "lighthouse.secret_id")?;
+            required_trimmed_value(lighthouse_secret_key.as_ref(), "lighthouse.secret_key")?;
+            required_trimmed_value(lighthouse_region.as_ref(), "lighthouse.region")?;
+            required_trimmed_value(lighthouse_instance_id.as_ref(), "lighthouse.instance_id")?;
+        }
+
         Ok(Self {
             config_dir: bootstrap.config_dir.clone(),
             log_dir: bootstrap.log_dir.clone(),
@@ -129,6 +158,13 @@ impl Config {
             ),
             node_id: device.node_id,
             device_name: device.name,
+            lighthouse_enabled,
+            lighthouse_secret_id,
+            lighthouse_secret_key,
+            lighthouse_session_token,
+            lighthouse_endpoint,
+            lighthouse_region,
+            lighthouse_instance_id,
             network_include_interfaces: network
                 .include_interfaces
                 .into_iter()
@@ -142,6 +178,10 @@ impl Config {
             shutdown_dry_run: value_or_default(shutdown.dry_run, false),
             cpu_interval_secs: value_or_default(sampling.cpu.interval_secs, 1),
             gpu_interval_secs: value_or_default(sampling.gpu.interval_secs, 1),
+            lighthouse_interval_secs: value_or_default(
+                sampling.lighthouse.interval_secs,
+                DEFAULT_LIGHTHOUSE_INTERVAL_SECS,
+            ),
             memory_interval_secs: value_or_default(sampling.memory.interval_secs, 5),
             uptime_interval_secs: value_or_default(sampling.uptime.interval_secs, 300),
             disk_interval_secs: value_or_default(sampling.disk.interval_secs, 30),
@@ -185,6 +225,26 @@ fn required_value<T>(value: Option<T>, key: &str) -> Result<T> {
     })
 }
 
+fn required_trimmed_value(value: Option<&String>, key: &str) -> Result<()> {
+    match value {
+        Some(value) if !value.trim().is_empty() => Ok(()),
+        _ => Err(anyhow!(
+            "missing required configuration value `{key}` in `{CONFIG_FILE_NAME}`"
+        )),
+    }
+}
+
+fn trim_optional(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 fn value_or_default<T>(value: Option<T>, default: T) -> T {
     value.unwrap_or(default)
 }
@@ -211,6 +271,15 @@ mod tests {
                 node_id: Some("node-a".to_string()),
                 name: Some("Node A".to_string()),
             },
+            lighthouse: LighthouseConfig {
+                enabled: Some(true),
+                secret_id: Some("secret-id".to_string()),
+                secret_key: Some("secret-key".to_string()),
+                session_token: Some("session-token".to_string()),
+                endpoint: Some("lighthouse.tencentcloudapi.com".to_string()),
+                region: Some("ap-chengdu".to_string()),
+                instance_id: Some("lhins-example".to_string()),
+            },
             network: NetworkConfig {
                 include_interfaces: vec!["Ethernet".to_string(), "Wi-Fi".to_string()],
             },
@@ -220,6 +289,9 @@ mod tests {
                 },
                 gpu: MetricSamplingConfig {
                     interval_secs: Some(3),
+                },
+                lighthouse: MetricSamplingConfig {
+                    interval_secs: Some(600),
                 },
                 memory: MetricSamplingConfig {
                     interval_secs: Some(7),
@@ -278,9 +350,23 @@ mod tests {
         assert_eq!(config.discovery_prefix, "ha");
         assert_eq!(config.topic_prefix, "custom/monitor");
         assert_eq!(config.node_id.as_deref(), Some("node-a"));
+        assert!(config.lighthouse_enabled);
+        assert_eq!(config.lighthouse_secret_id.as_deref(), Some("secret-id"));
+        assert_eq!(config.lighthouse_secret_key.as_deref(), Some("secret-key"));
+        assert_eq!(
+            config.lighthouse_session_token.as_deref(),
+            Some("session-token")
+        );
+        assert_eq!(config.lighthouse_endpoint, "lighthouse.tencentcloudapi.com");
+        assert_eq!(config.lighthouse_region.as_deref(), Some("ap-chengdu"));
+        assert_eq!(
+            config.lighthouse_instance_id.as_deref(),
+            Some("lhins-example")
+        );
         assert_eq!(config.network_include_interfaces, vec!["Ethernet", "Wi-Fi"]);
         assert_eq!(config.cpu_interval_secs, 2);
         assert_eq!(config.gpu_interval_secs, 3);
+        assert_eq!(config.lighthouse_interval_secs, 600);
         assert_eq!(config.memory_interval_secs, 7);
         assert_eq!(config.uptime_interval_secs, 600);
         assert_eq!(config.disk_interval_secs, 45);
@@ -322,6 +408,10 @@ mod tests {
         assert_eq!(config.topic_prefix, "monitor/system");
         assert_eq!(config.cpu_interval_secs, 1);
         assert_eq!(config.gpu_interval_secs, 1);
+        assert_eq!(
+            config.lighthouse_interval_secs,
+            DEFAULT_LIGHTHOUSE_INTERVAL_SECS
+        );
         assert_eq!(config.memory_interval_secs, 5);
         assert_eq!(config.uptime_interval_secs, 300);
         assert_eq!(config.disk_interval_secs, 30);
@@ -340,6 +430,12 @@ mod tests {
             config.network_total_change_threshold_bytes,
             DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES
         );
+        assert!(!config.lighthouse_enabled);
+        assert_eq!(config.lighthouse_endpoint, DEFAULT_LIGHTHOUSE_ENDPOINT);
+        assert!(config.lighthouse_secret_id.is_none());
+        assert!(config.lighthouse_secret_key.is_none());
+        assert!(config.lighthouse_region.is_none());
+        assert!(config.lighthouse_instance_id.is_none());
         assert!(!config.enable_shutdown_button);
         assert_eq!(config.shutdown_payload, "shutdown");
         assert_eq!(config.shutdown_cancel_payload, "cancel");
@@ -382,6 +478,32 @@ mod tests {
             error
                 .to_string()
                 .contains("missing required configuration value `mqtt.host`")
+        );
+    }
+
+    #[test]
+    fn enabled_lighthouse_requires_credentials_and_instance_details() {
+        let error = Config::from_file(
+            &BootstrapOptions::default(),
+            FileConfig {
+                mqtt: MqttConfig {
+                    host: Some("10.0.0.10".to_string()),
+                    ..MqttConfig::default()
+                },
+                lighthouse: LighthouseConfig {
+                    enabled: Some(true),
+                    region: Some("ap-chengdu".to_string()),
+                    ..LighthouseConfig::default()
+                },
+                ..FileConfig::default()
+            },
+        )
+        .expect_err("missing lighthouse credentials should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required configuration value `lighthouse.secret_id`")
         );
     }
 }
