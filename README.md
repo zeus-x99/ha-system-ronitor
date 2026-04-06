@@ -35,8 +35,6 @@
 - 网络
   - `network_download_rate`
   - `network_upload_rate`
-  - `network_total_download`
-  - `network_total_upload`
   - 如果配置了 `network.include_interfaces`，还会额外发布对应网卡的同名分项实体
 - 磁盘
   - 每个挂载点发布 `used` / `available` / `total` / `usage`

@@ -36,24 +36,18 @@ impl NetworkReader {
 
         let mut network_download_rate = 0.0_f64;
         let mut network_upload_rate = 0.0_f64;
-        let mut network_total_download = 0_u64;
-        let mut network_total_upload = 0_u64;
 
         let interfaces = if self.include_interfaces.is_empty() {
             self.collect_all_interfaces(
                 elapsed_secs,
                 &mut network_download_rate,
                 &mut network_upload_rate,
-                &mut network_total_download,
-                &mut network_total_upload,
             )
         } else {
             self.collect_included_interfaces(
                 elapsed_secs,
                 &mut network_download_rate,
                 &mut network_upload_rate,
-                &mut network_total_download,
-                &mut network_total_upload,
             )
         };
 
@@ -61,8 +55,6 @@ impl NetworkReader {
             timestamp: Utc::now().to_rfc3339(),
             network_download_rate,
             network_upload_rate,
-            network_total_download,
-            network_total_upload,
             interfaces,
         }
     }
@@ -82,8 +74,6 @@ impl NetworkReader {
         elapsed_secs: Option<f64>,
         total_download_rate: &mut f64,
         total_upload_rate: &mut f64,
-        total_download: &mut u64,
-        total_upload: &mut u64,
     ) -> BTreeMap<String, NetworkInterfaceStatePayload> {
         let mut interfaces = BTreeMap::new();
         let mut used_ids = HashSet::new();
@@ -95,13 +85,7 @@ impl NetworkReader {
 
             let interface_id = unique_interface_id(interface_name, &mut used_ids);
             let payload = build_interface_state_payload(network, elapsed_secs);
-            accumulate_totals(
-                &payload,
-                total_download_rate,
-                total_upload_rate,
-                total_download,
-                total_upload,
-            );
+            accumulate_totals(&payload, total_download_rate, total_upload_rate);
             interfaces.insert(interface_id, payload);
         }
 
@@ -113,8 +97,6 @@ impl NetworkReader {
         elapsed_secs: Option<f64>,
         total_download_rate: &mut f64,
         total_upload_rate: &mut f64,
-        total_download: &mut u64,
-        total_upload: &mut u64,
     ) -> BTreeMap<String, NetworkInterfaceStatePayload> {
         let actual_by_name = self
             .networks
@@ -132,20 +114,12 @@ impl NetworkReader {
             let payload = match actual_by_name.get(&normalize_interface_name(interface_name)) {
                 Some(network) => {
                     let payload = build_interface_state_payload(network, elapsed_secs);
-                    accumulate_totals(
-                        &payload,
-                        total_download_rate,
-                        total_upload_rate,
-                        total_download,
-                        total_upload,
-                    );
+                    accumulate_totals(&payload, total_download_rate, total_upload_rate);
                     payload
                 }
                 None => NetworkInterfaceStatePayload {
                     download_rate: 0.0,
                     upload_rate: 0.0,
-                    total_download: 0,
-                    total_upload: 0,
                 },
             };
 
@@ -220,8 +194,6 @@ fn build_interface_state_payload(
     NetworkInterfaceStatePayload {
         download_rate: bytes_per_second(network.received(), elapsed_secs),
         upload_rate: bytes_per_second(network.transmitted(), elapsed_secs),
-        total_download: network.total_received(),
-        total_upload: network.total_transmitted(),
     }
 }
 
@@ -229,13 +201,9 @@ fn accumulate_totals(
     payload: &NetworkInterfaceStatePayload,
     total_download_rate: &mut f64,
     total_upload_rate: &mut f64,
-    total_download: &mut u64,
-    total_upload: &mut u64,
 ) {
     *total_download_rate += payload.download_rate;
     *total_upload_rate += payload.upload_rate;
-    *total_download += payload.total_download;
-    *total_upload += payload.total_upload;
 }
 
 fn bytes_per_second(bytes_since_last_refresh: u64, elapsed_secs: Option<f64>) -> f64 {

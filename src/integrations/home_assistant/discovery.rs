@@ -616,36 +616,6 @@ fn build_components(
             .with_precision(1)
             .with_icon("mdi:upload-network"),
         );
-
-        components.insert(
-            "network_total_download".to_string(),
-            Component::sensor(
-                identity,
-                "network_total_download",
-                "Network Total Download",
-                topics.network_state.clone(),
-                "{{ value_json.network_total_download }}",
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("total_increasing")
-            .with_icon("mdi:download"),
-        );
-
-        components.insert(
-            "network_total_upload".to_string(),
-            Component::sensor(
-                identity,
-                "network_total_upload",
-                "Network Total Upload",
-                topics.network_state.clone(),
-                "{{ value_json.network_total_upload }}",
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("total_increasing")
-            .with_icon("mdi:upload"),
-        );
     }
 
     if config.enable_shutdown_button {
@@ -729,42 +699,6 @@ fn build_components(
                 .with_state_class("measurement")
                 .with_precision(1)
                 .with_icon("mdi:upload-network"),
-            );
-
-            components.insert(
-                format!("network_{}_total_download", interface_id),
-                Component::sensor(
-                    identity,
-                    &format!("network_{}_total_download", interface_id),
-                    format!("Network {} Total Download", interface.name),
-                    topics.network_state.clone(),
-                    format!(
-                        "{{{{ value_json.interfaces.{}.total_download | default(none) }}}}",
-                        interface_id
-                    ),
-                )
-                .with_unit("B")
-                .with_device_class("data_size")
-                .with_state_class("total_increasing")
-                .with_icon("mdi:download"),
-            );
-
-            components.insert(
-                format!("network_{}_total_upload", interface_id),
-                Component::sensor(
-                    identity,
-                    &format!("network_{}_total_upload", interface_id),
-                    format!("Network {} Total Upload", interface.name),
-                    topics.network_state.clone(),
-                    format!(
-                        "{{{{ value_json.interfaces.{}.total_upload | default(none) }}}}",
-                        interface_id
-                    ),
-                )
-                .with_unit("B")
-                .with_device_class("data_size")
-                .with_state_class("total_increasing")
-                .with_icon("mdi:upload"),
             );
         }
     }

@@ -75,8 +75,6 @@ pub struct NetworkState {
     pub timestamp: String,
     pub network_download_rate: f64,
     pub network_upload_rate: f64,
-    pub network_total_download: u64,
-    pub network_total_upload: u64,
     pub interfaces: BTreeMap<String, NetworkInterfaceStatePayload>,
 }
 
@@ -84,8 +82,6 @@ pub struct NetworkState {
 pub struct NetworkInterfaceStatePayload {
     pub download_rate: f64,
     pub upload_rate: f64,
-    pub total_download: u64,
-    pub total_upload: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,18 +151,9 @@ impl MemoryState {
 }
 
 impl NetworkState {
-    pub fn changed_from(
-        &self,
-        previous: &Self,
-        rate_threshold_bytes_per_sec: f64,
-        total_threshold_bytes: u64,
-    ) -> bool {
-        if abs_diff_u64(self.network_total_download, previous.network_total_download)
-            >= total_threshold_bytes
-            || abs_diff_u64(self.network_total_upload, previous.network_total_upload)
-                >= total_threshold_bytes
-            || abs_diff_f64(self.network_download_rate, previous.network_download_rate)
-                >= rate_threshold_bytes_per_sec
+    pub fn changed_from(&self, previous: &Self, rate_threshold_bytes_per_sec: f64) -> bool {
+        if abs_diff_f64(self.network_download_rate, previous.network_download_rate)
+            >= rate_threshold_bytes_per_sec
             || abs_diff_f64(self.network_upload_rate, previous.network_upload_rate)
                 >= rate_threshold_bytes_per_sec
             || self.interfaces.len() != previous.interfaces.len()
@@ -179,12 +166,8 @@ impl NetworkState {
                 return true;
             };
 
-            if abs_diff_u64(interface.total_download, previous_interface.total_download)
-                >= total_threshold_bytes
-                || abs_diff_u64(interface.total_upload, previous_interface.total_upload)
-                    >= total_threshold_bytes
-                || abs_diff_f64(interface.download_rate, previous_interface.download_rate)
-                    >= rate_threshold_bytes_per_sec
+            if abs_diff_f64(interface.download_rate, previous_interface.download_rate)
+                >= rate_threshold_bytes_per_sec
                 || abs_diff_f64(interface.upload_rate, previous_interface.upload_rate)
                     >= rate_threshold_bytes_per_sec
             {
