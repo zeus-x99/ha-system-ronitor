@@ -463,7 +463,6 @@ When enabled, the integration publishes these additional sensors:
 - `lighthouse_remaining`
 - `lighthouse_overflow`
 - `lighthouse_usage`
-- `lighthouse_status`
 - `lighthouse_deadline`
 
 Notes:

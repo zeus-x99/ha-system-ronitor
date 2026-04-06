@@ -511,19 +511,6 @@ fn build_components(
         );
 
         components.insert(
-            "lighthouse_status".to_string(),
-            Component::sensor(
-                identity,
-                "lighthouse_status",
-                "Tencent Cloud Lighthouse Status",
-                topics.lighthouse_state.clone(),
-                "{{ value_json.lighthouse_status | default(none) }}",
-            )
-            .with_entity_category("diagnostic")
-            .with_icon("mdi:check-network-outline"),
-        );
-
-        components.insert(
             "lighthouse_deadline".to_string(),
             Component::sensor(
                 identity,

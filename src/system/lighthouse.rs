@@ -176,7 +176,6 @@ impl LighthouseReader {
             lighthouse_remaining: package.traffic_package_remaining,
             lighthouse_overflow: package.traffic_overflow,
             lighthouse_usage: used_pct,
-            lighthouse_status: package.status,
             lighthouse_deadline: package.deadline,
         }))
     }

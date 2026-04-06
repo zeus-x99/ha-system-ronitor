@@ -96,7 +96,6 @@ pub struct LighthouseState {
     pub lighthouse_remaining: u64,
     pub lighthouse_overflow: u64,
     pub lighthouse_usage: f64,
-    pub lighthouse_status: String,
     pub lighthouse_deadline: String,
 }
 
@@ -240,7 +239,6 @@ impl LighthouseState {
             || self.lighthouse_total != previous.lighthouse_total
             || self.lighthouse_remaining != previous.lighthouse_remaining
             || self.lighthouse_overflow != previous.lighthouse_overflow
-            || self.lighthouse_status != previous.lighthouse_status
             || self.lighthouse_deadline != previous.lighthouse_deadline
     }
 }
@@ -276,7 +274,6 @@ mod tests {
             lighthouse_remaining: 9,
             lighthouse_overflow: 0,
             lighthouse_usage: 10.0,
-            lighthouse_status: "NETWORK_NORMAL".to_string(),
             lighthouse_deadline: "2030-01-01T00:00:00Z".to_string(),
         }
     }
