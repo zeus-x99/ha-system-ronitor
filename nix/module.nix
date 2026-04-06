@@ -141,26 +141,44 @@ in
           status_topic = "homeassistant/status";
           topic_prefix = "monitor/system";
         };
-        sampling = {
-          cpu.interval_secs = 1;
-          gpu.interval_secs = 1;
-          memory.interval_secs = 5;
-          network.interval_secs = 1;
-          uptime.interval_secs = 300;
-          disk.interval_secs = 30;
+        host.enabled = true;
+        cpu = {
+          enabled = true;
+          sampling_interval_secs = 1;
+          usage_threshold_pct = 1.0;
         };
-        thresholds = {
-          cpu.usage_pct = 1.0;
-          gpu = {
-            usage_pct = 1.0;
-            memory_change_mib = 8;
-          };
-          memory.change_mib = 8;
-          disk.change_mib = 32;
+        gpu = {
+          enabled = true;
+          sampling_interval_secs = 1;
+          usage_threshold_pct = 1.0;
+          memory_change_threshold_mib = 8;
+        };
+        memory = {
+          enabled = true;
+          sampling_interval_secs = 5;
+          change_threshold_mib = 8;
+        };
+        uptime = {
+          enabled = true;
+          sampling_interval_secs = 300;
+        };
+        disk = {
+          enabled = true;
+          sampling_interval_secs = 30;
+          change_threshold_mib = 32;
+          include_paths = [ "/" ];
+        };
+        network = {
+          enabled = true;
+          sampling_interval_secs = 1;
+          rate_change_threshold_bps = 10240;
+          total_change_threshold_bytes = 10240;
         };
         shutdown = {
           enable_button = false;
           payload = "shutdown";
+          cancel_payload = "cancel";
+          delay_secs = 30;
           dry_run = false;
         };
       };
@@ -172,26 +190,44 @@ in
             status_topic = "homeassistant/status";
             topic_prefix = "monitor/system";
           };
-          sampling = {
-            cpu.interval_secs = 1;
-            gpu.interval_secs = 1;
-            memory.interval_secs = 5;
-            network.interval_secs = 1;
-            uptime.interval_secs = 300;
-            disk.interval_secs = 30;
+          host.enabled = true;
+          cpu = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            usage_threshold_pct = 1.0;
           };
-          thresholds = {
-            cpu.usage_pct = 1.0;
-            gpu = {
-              usage_pct = 1.0;
-              memory_change_mib = 8;
-            };
-            memory.change_mib = 8;
-            disk.change_mib = 32;
+          gpu = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            usage_threshold_pct = 1.0;
+            memory_change_threshold_mib = 8;
+          };
+          memory = {
+            enabled = true;
+            sampling_interval_secs = 5;
+            change_threshold_mib = 8;
+          };
+          uptime = {
+            enabled = true;
+            sampling_interval_secs = 300;
+          };
+          disk = {
+            enabled = true;
+            sampling_interval_secs = 30;
+            change_threshold_mib = 32;
+            include_paths = [ "/" ];
+          };
+          network = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            rate_change_threshold_bps = 10240;
+            total_change_threshold_bytes = 10240;
           };
           shutdown = {
             enable_button = false;
             payload = "shutdown";
+            cancel_payload = "cancel";
+            delay_secs = 30;
             dry_run = false;
           };
         }
@@ -212,23 +248,45 @@ in
             node_id = "router";
             name = "Router System Monitor";
           };
-          network.include_interfaces = [ "Ethernet" "Wi-Fi" ];
-          sampling.cpu.interval_secs = 1;
-          sampling.gpu.interval_secs = 1;
-          sampling.memory.interval_secs = 5;
-          sampling.network.interval_secs = 1;
-          sampling.uptime.interval_secs = 300;
-          sampling.disk.interval_secs = 30;
-          thresholds.cpu.usage_pct = 1.0;
-          thresholds.gpu = {
-            usage_pct = 1.0;
-            memory_change_mib = 8;
+          host.enabled = true;
+          cpu = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            usage_threshold_pct = 1.0;
           };
-          thresholds.memory.change_mib = 8;
-          thresholds.disk.change_mib = 32;
+          gpu = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            usage_threshold_pct = 1.0;
+            memory_change_threshold_mib = 8;
+          };
+          memory = {
+            enabled = true;
+            sampling_interval_secs = 5;
+            change_threshold_mib = 8;
+          };
+          uptime = {
+            enabled = true;
+            sampling_interval_secs = 300;
+          };
+          disk = {
+            enabled = true;
+            sampling_interval_secs = 30;
+            change_threshold_mib = 32;
+            include_paths = [ "/" "/mnt/data" ];
+          };
+          network = {
+            enabled = true;
+            sampling_interval_secs = 1;
+            include_interfaces = [ "Ethernet" "Wi-Fi" ];
+            rate_change_threshold_bps = 10240;
+            total_change_threshold_bytes = 10240;
+          };
           shutdown = {
             enable_button = false;
             payload = "shutdown";
+            cancel_payload = "cancel";
+            delay_secs = 30;
             dry_run = false;
           };
         }
