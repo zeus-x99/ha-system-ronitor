@@ -112,6 +112,7 @@ pub struct DiskInfoState {
 #[derive(Debug, Clone, Serialize)]
 pub struct DiskInfoPayload {
     pub name: String,
+    pub path: String,
     pub mount_point: String,
     pub file_system: String,
     pub total: u64,

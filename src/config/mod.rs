@@ -8,10 +8,9 @@ use anyhow::{Result, anyhow};
 
 pub use bootstrap::BootstrapOptions;
 pub use file::{
-    CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuThresholdConfig, DeviceConfig, FileConfig,
-    GpuThresholdConfig, HomeAssistantConfig, LighthouseConfig, MetricSamplingConfig,
-    MetricThresholdConfig, MqttConfig, NetworkConfig, NetworkThresholdConfig, SamplingConfig,
-    ShutdownConfig, ThresholdsConfig, load_config_file_from, seed_config_toml,
+    CONFIG_EXAMPLE_FILE_NAME, CONFIG_FILE_NAME, CpuConfig, DeviceConfig, DiskConfig, FileConfig,
+    GpuConfig, HomeAssistantConfig, HostConfig, LighthouseConfig, MemoryConfig, MqttConfig,
+    NetworkConfig, ShutdownConfig, UptimeConfig, load_config_file_from, seed_config_toml,
 };
 pub use paths::{candidate_config_directories, candidate_config_directories_with};
 
@@ -28,6 +27,13 @@ pub struct Config {
     pub topic_prefix: String,
     pub node_id: Option<String>,
     pub device_name: Option<String>,
+    pub host_metrics_enabled: bool,
+    pub cpu_metrics_enabled: bool,
+    pub gpu_metrics_enabled: bool,
+    pub memory_metrics_enabled: bool,
+    pub uptime_metrics_enabled: bool,
+    pub disk_metrics_enabled: bool,
+    pub network_metrics_enabled: bool,
     pub lighthouse_enabled: bool,
     pub lighthouse_secret_id: Option<String>,
     pub lighthouse_secret_key: Option<String>,
@@ -36,6 +42,7 @@ pub struct Config {
     pub lighthouse_region: Option<String>,
     pub lighthouse_instance_id: Option<String>,
     pub network_include_interfaces: Vec<String>,
+    pub disk_include_paths: Vec<String>,
     pub enable_shutdown_button: bool,
     pub shutdown_payload: String,
     pub shutdown_cancel_payload: String,
@@ -86,10 +93,14 @@ impl Config {
             mqtt,
             home_assistant,
             device,
-            lighthouse,
+            host,
+            cpu,
+            gpu,
+            memory,
+            uptime,
+            disk,
             network,
-            sampling,
-            thresholds,
+            lighthouse,
             shutdown,
         } = file_config;
 
@@ -129,6 +140,12 @@ impl Config {
         );
         let lighthouse_region = trim_optional(lighthouse.region);
         let lighthouse_instance_id = trim_optional(lighthouse.instance_id);
+        let disk_include_paths = disk
+            .include_paths
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
 
         if lighthouse_enabled {
             required_trimmed_value(lighthouse_secret_id.as_ref(), "lighthouse.secret_id")?;
@@ -158,6 +175,14 @@ impl Config {
             ),
             node_id: device.node_id,
             device_name: device.name,
+            host_metrics_enabled: value_or_default(host.enabled, true),
+            cpu_metrics_enabled: value_or_default(cpu.enabled, true),
+            gpu_metrics_enabled: value_or_default(gpu.enabled, true),
+            memory_metrics_enabled: value_or_default(memory.enabled, true),
+            uptime_metrics_enabled: value_or_default(uptime.enabled, true),
+            disk_metrics_enabled: value_or_default(disk.enabled, true)
+                && !disk_include_paths.is_empty(),
+            network_metrics_enabled: value_or_default(network.enabled, true),
             lighthouse_enabled,
             lighthouse_secret_id,
             lighthouse_secret_key,
@@ -171,32 +196,33 @@ impl Config {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .collect(),
+            disk_include_paths,
             enable_shutdown_button: value_or_default(shutdown.enable_button, false),
             shutdown_payload,
             shutdown_cancel_payload,
             shutdown_delay_secs: value_or_default(shutdown.delay_secs, 30),
             shutdown_dry_run: value_or_default(shutdown.dry_run, false),
-            cpu_interval_secs: value_or_default(sampling.cpu.interval_secs, 1),
-            gpu_interval_secs: value_or_default(sampling.gpu.interval_secs, 1),
+            cpu_interval_secs: value_or_default(cpu.sampling_interval_secs, 1),
+            gpu_interval_secs: value_or_default(gpu.sampling_interval_secs, 1),
             lighthouse_interval_secs: value_or_default(
-                sampling.lighthouse.interval_secs,
+                lighthouse.sampling_interval_secs,
                 DEFAULT_LIGHTHOUSE_INTERVAL_SECS,
             ),
-            memory_interval_secs: value_or_default(sampling.memory.interval_secs, 5),
-            uptime_interval_secs: value_or_default(sampling.uptime.interval_secs, 300),
-            disk_interval_secs: value_or_default(sampling.disk.interval_secs, 30),
-            network_interval_secs: value_or_default(sampling.network.interval_secs, 1),
-            cpu_change_threshold_pct: value_or_default(thresholds.cpu.usage_pct, 1.0),
-            gpu_usage_change_threshold_pct: value_or_default(thresholds.gpu.usage_pct, 1.0),
-            gpu_memory_change_threshold_mib: value_or_default(thresholds.gpu.memory_change_mib, 8),
-            memory_change_threshold_mib: value_or_default(thresholds.memory.change_mib, 8),
-            disk_change_threshold_mib: value_or_default(thresholds.disk.change_mib, 32),
+            memory_interval_secs: value_or_default(memory.sampling_interval_secs, 5),
+            uptime_interval_secs: value_or_default(uptime.sampling_interval_secs, 300),
+            disk_interval_secs: value_or_default(disk.sampling_interval_secs, 30),
+            network_interval_secs: value_or_default(network.sampling_interval_secs, 1),
+            cpu_change_threshold_pct: value_or_default(cpu.usage_threshold_pct, 1.0),
+            gpu_usage_change_threshold_pct: value_or_default(gpu.usage_threshold_pct, 1.0),
+            gpu_memory_change_threshold_mib: value_or_default(gpu.memory_change_threshold_mib, 8),
+            memory_change_threshold_mib: value_or_default(memory.change_threshold_mib, 8),
+            disk_change_threshold_mib: value_or_default(disk.change_threshold_mib, 32),
             network_rate_change_threshold_bytes_per_sec: value_or_default(
-                thresholds.network.rate_change_bps,
+                network.rate_change_threshold_bps,
                 DEFAULT_NETWORK_RATE_CHANGE_THRESHOLD_BYTES_PER_SEC,
             ),
             network_total_change_threshold_bytes: value_or_default(
-                thresholds.network.total_change_bytes,
+                network.total_change_threshold_bytes,
                 DEFAULT_NETWORK_TOTAL_CHANGE_THRESHOLD_BYTES,
             ),
         })
@@ -271,59 +297,51 @@ mod tests {
                 node_id: Some("node-a".to_string()),
                 name: Some("Node A".to_string()),
             },
+            host: HostConfig {
+                enabled: Some(true),
+            },
+            cpu: CpuConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(2),
+                usage_threshold_pct: Some(2.5),
+            },
+            gpu: GpuConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(3),
+                usage_threshold_pct: Some(3.5),
+                memory_change_threshold_mib: Some(16),
+            },
+            memory: MemoryConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(7),
+                change_threshold_mib: Some(12),
+            },
+            uptime: UptimeConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(600),
+            },
+            disk: DiskConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(45),
+                change_threshold_mib: Some(64),
+                include_paths: vec!["/".to_string(), "/mnt/data".to_string()],
+            },
+            network: NetworkConfig {
+                enabled: Some(true),
+                sampling_interval_secs: Some(1),
+                include_interfaces: vec!["Ethernet".to_string(), "Wi-Fi".to_string()],
+                rate_change_threshold_bps: Some(32 * 1024),
+                total_change_threshold_bytes: Some(64 * 1024),
+            },
             lighthouse: LighthouseConfig {
                 enabled: Some(true),
+                sampling_interval_secs: Some(600),
                 secret_id: Some("secret-id".to_string()),
                 secret_key: Some("secret-key".to_string()),
                 session_token: Some("session-token".to_string()),
                 endpoint: Some("lighthouse.tencentcloudapi.com".to_string()),
                 region: Some("ap-chengdu".to_string()),
                 instance_id: Some("lhins-example".to_string()),
-            },
-            network: NetworkConfig {
-                include_interfaces: vec!["Ethernet".to_string(), "Wi-Fi".to_string()],
-            },
-            sampling: SamplingConfig {
-                cpu: MetricSamplingConfig {
-                    interval_secs: Some(2),
-                },
-                gpu: MetricSamplingConfig {
-                    interval_secs: Some(3),
-                },
-                lighthouse: MetricSamplingConfig {
-                    interval_secs: Some(600),
-                },
-                memory: MetricSamplingConfig {
-                    interval_secs: Some(7),
-                },
-                uptime: MetricSamplingConfig {
-                    interval_secs: Some(600),
-                },
-                disk: MetricSamplingConfig {
-                    interval_secs: Some(45),
-                },
-                network: MetricSamplingConfig {
-                    interval_secs: Some(1),
-                },
-            },
-            thresholds: ThresholdsConfig {
-                cpu: CpuThresholdConfig {
-                    usage_pct: Some(2.5),
-                },
-                gpu: GpuThresholdConfig {
-                    usage_pct: Some(3.5),
-                    memory_change_mib: Some(16),
-                },
-                memory: MetricThresholdConfig {
-                    change_mib: Some(12),
-                },
-                disk: MetricThresholdConfig {
-                    change_mib: Some(64),
-                },
-                network: NetworkThresholdConfig {
-                    rate_change_bps: Some(32 * 1024),
-                    total_change_bytes: Some(64 * 1024),
-                },
             },
             shutdown: ShutdownConfig {
                 enable_button: Some(true),
@@ -350,6 +368,13 @@ mod tests {
         assert_eq!(config.discovery_prefix, "ha");
         assert_eq!(config.topic_prefix, "custom/monitor");
         assert_eq!(config.node_id.as_deref(), Some("node-a"));
+        assert!(config.host_metrics_enabled);
+        assert!(config.cpu_metrics_enabled);
+        assert!(config.gpu_metrics_enabled);
+        assert!(config.memory_metrics_enabled);
+        assert!(config.uptime_metrics_enabled);
+        assert!(config.disk_metrics_enabled);
+        assert!(config.network_metrics_enabled);
         assert!(config.lighthouse_enabled);
         assert_eq!(config.lighthouse_secret_id.as_deref(), Some("secret-id"));
         assert_eq!(config.lighthouse_secret_key.as_deref(), Some("secret-key"));
@@ -364,6 +389,7 @@ mod tests {
             Some("lhins-example")
         );
         assert_eq!(config.network_include_interfaces, vec!["Ethernet", "Wi-Fi"]);
+        assert_eq!(config.disk_include_paths, vec!["/", "/mnt/data"]);
         assert_eq!(config.cpu_interval_secs, 2);
         assert_eq!(config.gpu_interval_secs, 3);
         assert_eq!(config.lighthouse_interval_secs, 600);
@@ -406,6 +432,13 @@ mod tests {
         assert_eq!(config.discovery_prefix, "homeassistant");
         assert_eq!(config.home_assistant_status_topic, "homeassistant/status");
         assert_eq!(config.topic_prefix, "monitor/system");
+        assert!(config.host_metrics_enabled);
+        assert!(config.cpu_metrics_enabled);
+        assert!(config.gpu_metrics_enabled);
+        assert!(config.memory_metrics_enabled);
+        assert!(config.uptime_metrics_enabled);
+        assert!(!config.disk_metrics_enabled);
+        assert!(config.network_metrics_enabled);
         assert_eq!(config.cpu_interval_secs, 1);
         assert_eq!(config.gpu_interval_secs, 1);
         assert_eq!(
@@ -417,6 +450,7 @@ mod tests {
         assert_eq!(config.disk_interval_secs, 30);
         assert_eq!(config.network_interval_secs, 1);
         assert!(config.network_include_interfaces.is_empty());
+        assert!(config.disk_include_paths.is_empty());
         assert_eq!(config.cpu_change_threshold_pct, 1.0);
         assert_eq!(config.gpu_usage_change_threshold_pct, 1.0);
         assert_eq!(config.gpu_memory_change_threshold_mib, 8);
@@ -505,5 +539,77 @@ mod tests {
                 .to_string()
                 .contains("missing required configuration value `lighthouse.secret_id`")
         );
+    }
+
+    #[test]
+    fn metric_publish_switches_can_disable_individual_metric_groups() {
+        let config = Config::from_file(
+            &BootstrapOptions::default(),
+            FileConfig {
+                mqtt: MqttConfig {
+                    host: Some("10.0.0.10".to_string()),
+                    ..MqttConfig::default()
+                },
+                host: HostConfig {
+                    enabled: Some(false),
+                },
+                cpu: CpuConfig {
+                    enabled: Some(false),
+                    ..CpuConfig::default()
+                },
+                gpu: GpuConfig {
+                    enabled: Some(true),
+                    ..GpuConfig::default()
+                },
+                memory: MemoryConfig {
+                    enabled: Some(false),
+                    ..MemoryConfig::default()
+                },
+                uptime: UptimeConfig {
+                    enabled: Some(true),
+                    ..UptimeConfig::default()
+                },
+                disk: DiskConfig {
+                    enabled: Some(false),
+                    ..DiskConfig::default()
+                },
+                network: NetworkConfig {
+                    enabled: Some(true),
+                    ..NetworkConfig::default()
+                },
+                ..FileConfig::default()
+            },
+        )
+        .expect("config should load");
+
+        assert!(!config.host_metrics_enabled);
+        assert!(!config.cpu_metrics_enabled);
+        assert!(config.gpu_metrics_enabled);
+        assert!(!config.memory_metrics_enabled);
+        assert!(config.uptime_metrics_enabled);
+        assert!(!config.disk_metrics_enabled);
+        assert!(config.network_metrics_enabled);
+    }
+
+    #[test]
+    fn disk_metrics_require_include_paths() {
+        let config = Config::from_file(
+            &BootstrapOptions::default(),
+            FileConfig {
+                mqtt: MqttConfig {
+                    host: Some("10.0.0.10".to_string()),
+                    ..MqttConfig::default()
+                },
+                disk: DiskConfig {
+                    enabled: Some(true),
+                    ..DiskConfig::default()
+                },
+                ..FileConfig::default()
+            },
+        )
+        .expect("config should load");
+
+        assert!(!config.disk_metrics_enabled);
+        assert!(config.disk_include_paths.is_empty());
     }
 }

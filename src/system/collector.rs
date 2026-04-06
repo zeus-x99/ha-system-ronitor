@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use sysinfo::{Components, CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 use crate::config::Config;
 use crate::device::Identity;
-use crate::shared::util::disk_component_id;
+use crate::shared::util::{disk_component_id, slugify};
 use crate::system::gpu::{GpuReader, GpuReading};
 use crate::system::lighthouse::LighthouseReader;
 use crate::system::models::{
@@ -29,6 +31,7 @@ pub struct Collector {
     gpu_reader: GpuReader,
     lighthouse_reader: Option<LighthouseReader>,
     network_reader: NetworkReader,
+    disk_include_paths: Vec<String>,
     host_info: HostInfoState,
     cpu_info: CpuInfoState,
     memory_info: MemoryInfoState,
@@ -74,7 +77,7 @@ impl Collector {
         let memory_info = MemoryInfoState {
             memory_total: system.total_memory(),
         };
-        let disk_info = build_disk_info(&disks);
+        let disk_info = build_disk_info(&disks, &config.disk_include_paths);
         let network_info = network_reader.info_state();
         let cpu_package_temp = cpu_temperature_reader.read(&components);
         let gpu_temperature = detect_gpu_temp_from_components(&components);
@@ -91,6 +94,7 @@ impl Collector {
             gpu_reader,
             lighthouse_reader,
             network_reader,
+            disk_include_paths: config.disk_include_paths.clone(),
             host_info,
             cpu_info,
             memory_info,
@@ -177,36 +181,7 @@ impl Collector {
     pub fn sample_disks(&mut self) -> DiskState {
         self.disks.refresh(true);
 
-        let disks = self
-            .disks
-            .list()
-            .iter()
-            .filter_map(|disk| {
-                let mount_point = disk.mount_point().display().to_string();
-                let disk_id = disk_component_id(&mount_point, &disk.name().to_string_lossy());
-                let total = disk.total_space();
-                if total == 0 {
-                    return None;
-                }
-
-                let available = disk.available_space();
-                let used = total.saturating_sub(available);
-
-                Some((
-                    disk_id,
-                    DiskStatePayload {
-                        available,
-                        used,
-                        usage: percent(used, total),
-                    },
-                ))
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        DiskState {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            disks,
-        }
+        build_disk_state(&self.disks, &self.disk_include_paths)
     }
 
     pub fn sample_network(&mut self) -> NetworkState {
@@ -268,33 +243,147 @@ impl Collector {
     }
 }
 
-fn build_disk_info(disks: &Disks) -> DiskInfoState {
-    let disks = disks
-        .list()
-        .iter()
-        .filter_map(|disk| {
-            let mount_point = disk.mount_point().display().to_string();
-            let total = disk.total_space();
-            if total == 0 {
-                return None;
-            }
-
-            let disk_id = disk_component_id(&mount_point, &disk.name().to_string_lossy());
-            let file_system = disk.file_system().to_string_lossy().into_owned();
-
-            Some((
-                disk_id,
+fn build_disk_info(disks: &Disks, include_paths: &[String]) -> DiskInfoState {
+    let disks = collect_disk_entries(disks, include_paths)
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.disk_id,
                 DiskInfoPayload {
-                    name: disk.name().to_string_lossy().into_owned(),
-                    mount_point,
-                    file_system,
-                    total,
+                    name: entry.name,
+                    path: entry.path,
+                    mount_point: entry.mount_point,
+                    file_system: entry.file_system,
+                    total: entry.total,
                 },
-            ))
+            )
         })
         .collect();
 
     DiskInfoState { disks }
+}
+
+fn build_disk_state(disks: &Disks, include_paths: &[String]) -> DiskState {
+    let disks = collect_disk_entries(disks, include_paths)
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.disk_id,
+                DiskStatePayload {
+                    available: entry.available,
+                    used: entry.used,
+                    usage: entry.usage,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    DiskState {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        disks,
+    }
+}
+
+#[derive(Debug)]
+struct SelectedDiskEntry {
+    disk_id: String,
+    name: String,
+    path: String,
+    mount_point: String,
+    file_system: String,
+    total: u64,
+    available: u64,
+    used: u64,
+    usage: f64,
+}
+
+fn collect_disk_entries(disks: &Disks, include_paths: &[String]) -> Vec<SelectedDiskEntry> {
+    if include_paths.is_empty() {
+        return Vec::new();
+    }
+
+    include_paths
+        .iter()
+        .filter_map(|path| select_disk_entry(disks, path))
+        .collect()
+}
+
+fn select_disk_entry(disks: &Disks, path: &str) -> Option<SelectedDiskEntry> {
+    let requested_path = Path::new(path);
+    let disk = disks
+        .list()
+        .iter()
+        .filter(|disk| requested_path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())?;
+
+    let total = disk.total_space();
+    if total == 0 {
+        return None;
+    }
+
+    let mount_point = disk.mount_point().display().to_string();
+    let name = disk.name().to_string_lossy().into_owned();
+    let available = disk.available_space();
+    let used = total.saturating_sub(available);
+    let disk_id = disk_path_component_id(path, &mount_point, &name);
+
+    Some(SelectedDiskEntry {
+        disk_id,
+        name,
+        path: path.to_string(),
+        mount_point,
+        file_system: disk.file_system().to_string_lossy().into_owned(),
+        total,
+        available,
+        used,
+        usage: percent(used, total),
+    })
+}
+
+fn disk_path_component_id(path: &str, mount_point: &str, fallback_name: &str) -> String {
+    let normalized_path = normalize_disk_path(path);
+    let slug = slugify(&normalized_path);
+    if slug.is_empty() {
+        stable_disk_path_id(&normalized_path, mount_point, fallback_name)
+    } else {
+        slug
+    }
+}
+
+fn normalize_disk_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut normalized = std::path::PathBuf::new();
+    for component in Path::new(trimmed).components() {
+        normalized.push(component.as_os_str());
+    }
+
+    let normalized = normalized.display().to_string();
+    if normalized.is_empty() {
+        trimmed.to_string()
+    } else {
+        normalized
+    }
+}
+
+fn stable_disk_path_id(path: &str, mount_point: &str, fallback_name: &str) -> String {
+    let digest = stable_disk_path_hash(path);
+    if path == "/" || path == "\\" {
+        format!("path_root_{digest}")
+    } else {
+        let fallback = disk_component_id(mount_point, fallback_name);
+        format!("path_{fallback}_{digest}")
+    }
+}
+
+fn stable_disk_path_hash(path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    digest[..12].to_string()
 }
 
 fn gpu_info_from_reading(reading: &GpuReading) -> GpuInfoState {
@@ -309,5 +398,39 @@ fn percent(value: u64, total: u64) -> f64 {
         0.0
     } else {
         (value as f64 / total as f64) * 100.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disk_path_component_id;
+
+    #[test]
+    fn ascii_disk_paths_keep_human_readable_ids() {
+        assert_eq!(
+            disk_path_component_id("/mnt/data", "/", "rootfs"),
+            "mnt_data"
+        );
+    }
+
+    #[test]
+    fn root_disk_path_gets_stable_non_colliding_id() {
+        let root_id = disk_path_component_id("/", "/", "rootfs");
+        let child_id = disk_path_component_id("/root", "/", "rootfs");
+
+        assert!(root_id.starts_with("path_root_"));
+        assert_ne!(root_id, child_id);
+    }
+
+    #[test]
+    fn non_ascii_disk_paths_get_distinct_fallback_ids() {
+        let first = disk_path_component_id("/下载", "/", "rootfs");
+        let second = disk_path_component_id("/数据", "/", "rootfs");
+        let repeated = disk_path_component_id("/下载/", "/", "rootfs");
+
+        assert!(first.starts_with("path_"));
+        assert!(second.starts_with("path_"));
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
     }
 }

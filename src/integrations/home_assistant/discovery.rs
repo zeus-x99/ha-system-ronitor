@@ -184,8 +184,8 @@ pub fn build_device_discovery_message(
     identity: &Identity,
     topics: &Topics,
     gpu_info: Option<&GpuInfoState>,
-    disks: &DiskInfoState,
-    network_info: &NetworkInfoState,
+    disks: Option<&DiskInfoState>,
+    network_info: Option<&NetworkInfoState>,
 ) -> DeviceDiscoveryMessage {
     let components = build_components(config, identity, topics, gpu_info, disks, network_info);
 
@@ -222,80 +222,86 @@ fn build_components(
     identity: &Identity,
     topics: &Topics,
     gpu_info: Option<&GpuInfoState>,
-    disks: &DiskInfoState,
-    network_info: &NetworkInfoState,
+    disks: Option<&DiskInfoState>,
+    network_info: Option<&NetworkInfoState>,
 ) -> BTreeMap<String, Component> {
     let mut components = BTreeMap::new();
 
-    components.insert(
-        "cpu_usage".to_string(),
-        Component::sensor(
-            identity,
-            "cpu_usage",
-            "CPU Usage",
-            topics.cpu_state.clone(),
-            "{{ value_json.cpu_usage }}",
-        )
-        .with_unit("%")
-        .with_state_class("measurement")
-        .with_precision(1)
-        .with_icon("mdi:chip"),
-    );
+    if config.cpu_metrics_enabled {
+        components.insert(
+            "cpu_usage".to_string(),
+            Component::sensor(
+                identity,
+                "cpu_usage",
+                "CPU Usage",
+                topics.cpu_state.clone(),
+                "{{ value_json.cpu_usage }}",
+            )
+            .with_unit("%")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:chip"),
+        );
 
-    components.insert(
-        "cpu_package_temp".to_string(),
-        Component::sensor(
-            identity,
-            "cpu_package_temp",
-            "CPU Package Temperature",
-            topics.cpu_state.clone(),
-            "{{ value_json.cpu_package_temp | default(none) }}",
-        )
-        .with_unit(CELSIUS_UNIT)
-        .with_device_class("temperature")
-        .with_state_class("measurement")
-        .with_precision(1)
-        .with_icon("mdi:thermometer"),
-    );
+        components.insert(
+            "cpu_package_temp".to_string(),
+            Component::sensor(
+                identity,
+                "cpu_package_temp",
+                "CPU Package Temperature",
+                topics.cpu_state.clone(),
+                "{{ value_json.cpu_package_temp | default(none) }}",
+            )
+            .with_unit(CELSIUS_UNIT)
+            .with_device_class("temperature")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:thermometer"),
+        );
 
-    components.insert(
-        "cpu_model".to_string(),
-        Component::sensor(
-            identity,
-            "cpu_model",
-            "CPU Model",
-            topics.cpu_info_state.clone(),
-            "{{ value_json.cpu_model }}",
-        )
-        .with_icon("mdi:chip"),
-    );
+        components.insert(
+            "cpu_model".to_string(),
+            Component::sensor(
+                identity,
+                "cpu_model",
+                "CPU Model",
+                topics.cpu_info_state.clone(),
+                "{{ value_json.cpu_model }}",
+            )
+            .with_icon("mdi:chip"),
+        );
+    }
 
-    components.insert(
-        "os_version".to_string(),
-        Component::sensor(
-            identity,
-            "os_version",
-            "OS Version",
-            topics.host_info_state.clone(),
-            "{{ value_json.os_version }}",
-        )
-        .with_icon("mdi:information-outline"),
-    );
+    if config.host_metrics_enabled {
+        components.insert(
+            "os_version".to_string(),
+            Component::sensor(
+                identity,
+                "os_version",
+                "OS Version",
+                topics.host_info_state.clone(),
+                "{{ value_json.os_version }}",
+            )
+            .with_icon("mdi:information-outline"),
+        );
+    }
 
-    components.insert(
-        "uptime".to_string(),
-        Component::sensor(
-            identity,
-            "uptime",
-            "Uptime",
-            topics.uptime_state.clone(),
-            "{{ value_json.uptime }}",
-        )
-        .with_unit("s")
-        .with_device_class("duration")
-        .with_state_class("measurement")
-        .with_icon("mdi:timer-outline"),
-    );
+    if config.uptime_metrics_enabled {
+        components.insert(
+            "uptime".to_string(),
+            Component::sensor(
+                identity,
+                "uptime",
+                "Uptime",
+                topics.uptime_state.clone(),
+                "{{ value_json.uptime }}",
+            )
+            .with_unit("s")
+            .with_device_class("duration")
+            .with_state_class("measurement")
+            .with_icon("mdi:timer-outline"),
+        );
+    }
 
     if config.enable_shutdown_button && config.shutdown_delay_secs > 0 {
         components.insert(
@@ -314,7 +320,9 @@ fn build_components(
         );
     }
 
-    if let Some(gpu_info) = gpu_info {
+    if config.gpu_metrics_enabled
+        && let Some(gpu_info) = gpu_info
+    {
         components.insert(
             "gpu_name".to_string(),
             Component::sensor(
@@ -584,112 +592,116 @@ fn build_components(
         );
     }
 
-    components.insert(
-        "memory_used".to_string(),
-        Component::sensor(
-            identity,
-            "memory_used",
-            "Memory Used",
-            topics.memory_state.clone(),
-            "{{ value_json.memory_used }}",
-        )
-        .with_unit("B")
-        .with_device_class("data_size")
-        .with_state_class("measurement")
-        .with_icon("mdi:memory"),
-    );
+    if config.memory_metrics_enabled {
+        components.insert(
+            "memory_used".to_string(),
+            Component::sensor(
+                identity,
+                "memory_used",
+                "Memory Used",
+                topics.memory_state.clone(),
+                "{{ value_json.memory_used }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:memory"),
+        );
 
-    components.insert(
-        "memory_total".to_string(),
-        Component::sensor(
-            identity,
-            "memory_total",
-            "Memory Total",
-            topics.memory_info_state.clone(),
-            "{{ value_json.memory_total }}",
-        )
-        .with_unit("B")
-        .with_device_class("data_size")
-        .with_state_class("measurement")
-        .with_icon("mdi:memory"),
-    );
+        components.insert(
+            "memory_total".to_string(),
+            Component::sensor(
+                identity,
+                "memory_total",
+                "Memory Total",
+                topics.memory_info_state.clone(),
+                "{{ value_json.memory_total }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("measurement")
+            .with_icon("mdi:memory"),
+        );
 
-    components.insert(
-        "memory_usage".to_string(),
-        Component::sensor(
-            identity,
-            "memory_usage",
-            "Memory Usage",
-            topics.memory_state.clone(),
-            "{{ value_json.memory_usage }}",
-        )
-        .with_unit("%")
-        .with_state_class("measurement")
-        .with_precision(1)
-        .with_icon("mdi:memory"),
-    );
+        components.insert(
+            "memory_usage".to_string(),
+            Component::sensor(
+                identity,
+                "memory_usage",
+                "Memory Usage",
+                topics.memory_state.clone(),
+                "{{ value_json.memory_usage }}",
+            )
+            .with_unit("%")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:memory"),
+        );
+    }
 
-    components.insert(
-        "network_download_rate".to_string(),
-        Component::sensor(
-            identity,
-            "network_download_rate",
-            "Network Download Rate",
-            topics.network_state.clone(),
-            "{{ value_json.network_download_rate }}",
-        )
-        .with_unit("B/s")
-        .with_device_class("data_rate")
-        .with_state_class("measurement")
-        .with_precision(1)
-        .with_icon("mdi:download-network"),
-    );
+    if config.network_metrics_enabled {
+        components.insert(
+            "network_download_rate".to_string(),
+            Component::sensor(
+                identity,
+                "network_download_rate",
+                "Network Download Rate",
+                topics.network_state.clone(),
+                "{{ value_json.network_download_rate }}",
+            )
+            .with_unit("B/s")
+            .with_device_class("data_rate")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:download-network"),
+        );
 
-    components.insert(
-        "network_upload_rate".to_string(),
-        Component::sensor(
-            identity,
-            "network_upload_rate",
-            "Network Upload Rate",
-            topics.network_state.clone(),
-            "{{ value_json.network_upload_rate }}",
-        )
-        .with_unit("B/s")
-        .with_device_class("data_rate")
-        .with_state_class("measurement")
-        .with_precision(1)
-        .with_icon("mdi:upload-network"),
-    );
+        components.insert(
+            "network_upload_rate".to_string(),
+            Component::sensor(
+                identity,
+                "network_upload_rate",
+                "Network Upload Rate",
+                topics.network_state.clone(),
+                "{{ value_json.network_upload_rate }}",
+            )
+            .with_unit("B/s")
+            .with_device_class("data_rate")
+            .with_state_class("measurement")
+            .with_precision(1)
+            .with_icon("mdi:upload-network"),
+        );
 
-    components.insert(
-        "network_total_download".to_string(),
-        Component::sensor(
-            identity,
-            "network_total_download",
-            "Network Total Download",
-            topics.network_state.clone(),
-            "{{ value_json.network_total_download }}",
-        )
-        .with_unit("B")
-        .with_device_class("data_size")
-        .with_state_class("total_increasing")
-        .with_icon("mdi:download"),
-    );
+        components.insert(
+            "network_total_download".to_string(),
+            Component::sensor(
+                identity,
+                "network_total_download",
+                "Network Total Download",
+                topics.network_state.clone(),
+                "{{ value_json.network_total_download }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("total_increasing")
+            .with_icon("mdi:download"),
+        );
 
-    components.insert(
-        "network_total_upload".to_string(),
-        Component::sensor(
-            identity,
-            "network_total_upload",
-            "Network Total Upload",
-            topics.network_state.clone(),
-            "{{ value_json.network_total_upload }}",
-        )
-        .with_unit("B")
-        .with_device_class("data_size")
-        .with_state_class("total_increasing")
-        .with_icon("mdi:upload"),
-    );
+        components.insert(
+            "network_total_upload".to_string(),
+            Component::sensor(
+                identity,
+                "network_total_upload",
+                "Network Total Upload",
+                topics.network_state.clone(),
+                "{{ value_json.network_total_upload }}",
+            )
+            .with_unit("B")
+            .with_device_class("data_size")
+            .with_state_class("total_increasing")
+            .with_icon("mdi:upload"),
+        );
+    }
 
     if config.enable_shutdown_button {
         let shutdown_button = if config.shutdown_delay_secs > 0 {
@@ -732,155 +744,301 @@ fn build_components(
         }
     }
 
-    for (interface_id, interface) in &network_info.interfaces {
-        components.insert(
-            format!("network_{}_download_rate", interface_id),
-            Component::sensor(
-                identity,
-                &format!("network_{}_download_rate", interface_id),
-                format!("Network {} Download Rate", interface.name),
-                topics.network_state.clone(),
-                format!(
-                    "{{{{ value_json.interfaces.{}.download_rate | default(none) }}}}",
-                    interface_id
-                ),
-            )
-            .with_unit("B/s")
-            .with_device_class("data_rate")
-            .with_state_class("measurement")
-            .with_precision(1)
-            .with_icon("mdi:download-network"),
-        );
+    if config.network_metrics_enabled
+        && let Some(network_info) = network_info
+    {
+        for (interface_id, interface) in &network_info.interfaces {
+            components.insert(
+                format!("network_{}_download_rate", interface_id),
+                Component::sensor(
+                    identity,
+                    &format!("network_{}_download_rate", interface_id),
+                    format!("Network {} Download Rate", interface.name),
+                    topics.network_state.clone(),
+                    format!(
+                        "{{{{ value_json.interfaces.{}.download_rate | default(none) }}}}",
+                        interface_id
+                    ),
+                )
+                .with_unit("B/s")
+                .with_device_class("data_rate")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:download-network"),
+            );
 
-        components.insert(
-            format!("network_{}_upload_rate", interface_id),
-            Component::sensor(
-                identity,
-                &format!("network_{}_upload_rate", interface_id),
-                format!("Network {} Upload Rate", interface.name),
-                topics.network_state.clone(),
-                format!(
-                    "{{{{ value_json.interfaces.{}.upload_rate | default(none) }}}}",
-                    interface_id
-                ),
-            )
-            .with_unit("B/s")
-            .with_device_class("data_rate")
-            .with_state_class("measurement")
-            .with_precision(1)
-            .with_icon("mdi:upload-network"),
-        );
+            components.insert(
+                format!("network_{}_upload_rate", interface_id),
+                Component::sensor(
+                    identity,
+                    &format!("network_{}_upload_rate", interface_id),
+                    format!("Network {} Upload Rate", interface.name),
+                    topics.network_state.clone(),
+                    format!(
+                        "{{{{ value_json.interfaces.{}.upload_rate | default(none) }}}}",
+                        interface_id
+                    ),
+                )
+                .with_unit("B/s")
+                .with_device_class("data_rate")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:upload-network"),
+            );
 
-        components.insert(
-            format!("network_{}_total_download", interface_id),
-            Component::sensor(
-                identity,
-                &format!("network_{}_total_download", interface_id),
-                format!("Network {} Total Download", interface.name),
-                topics.network_state.clone(),
-                format!(
-                    "{{{{ value_json.interfaces.{}.total_download | default(none) }}}}",
-                    interface_id
-                ),
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("total_increasing")
-            .with_icon("mdi:download"),
-        );
+            components.insert(
+                format!("network_{}_total_download", interface_id),
+                Component::sensor(
+                    identity,
+                    &format!("network_{}_total_download", interface_id),
+                    format!("Network {} Total Download", interface.name),
+                    topics.network_state.clone(),
+                    format!(
+                        "{{{{ value_json.interfaces.{}.total_download | default(none) }}}}",
+                        interface_id
+                    ),
+                )
+                .with_unit("B")
+                .with_device_class("data_size")
+                .with_state_class("total_increasing")
+                .with_icon("mdi:download"),
+            );
 
-        components.insert(
-            format!("network_{}_total_upload", interface_id),
-            Component::sensor(
-                identity,
-                &format!("network_{}_total_upload", interface_id),
-                format!("Network {} Total Upload", interface.name),
-                topics.network_state.clone(),
-                format!(
-                    "{{{{ value_json.interfaces.{}.total_upload | default(none) }}}}",
-                    interface_id
-                ),
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("total_increasing")
-            .with_icon("mdi:upload"),
-        );
+            components.insert(
+                format!("network_{}_total_upload", interface_id),
+                Component::sensor(
+                    identity,
+                    &format!("network_{}_total_upload", interface_id),
+                    format!("Network {} Total Upload", interface.name),
+                    topics.network_state.clone(),
+                    format!(
+                        "{{{{ value_json.interfaces.{}.total_upload | default(none) }}}}",
+                        interface_id
+                    ),
+                )
+                .with_unit("B")
+                .with_device_class("data_size")
+                .with_state_class("total_increasing")
+                .with_icon("mdi:upload"),
+            );
+        }
     }
 
-    for (disk_id, disk) in &disks.disks {
-        components.insert(
-            format!("disk_{}_used", disk_id),
-            Component::sensor(
-                identity,
-                &format!("disk_{}_used", disk_id),
-                format!("Disk {} Used", disk.mount_point),
-                topics.disk_state.clone(),
-                format!(
-                    "{{{{ value_json.disks.{}.used | default(none) }}}}",
-                    disk_id
-                ),
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("measurement")
-            .with_icon("mdi:harddisk"),
-        );
+    if config.disk_metrics_enabled
+        && let Some(disks) = disks
+    {
+        for (disk_id, disk) in &disks.disks {
+            components.insert(
+                format!("disk_{}_used", disk_id),
+                Component::sensor(
+                    identity,
+                    &format!("disk_{}_used", disk_id),
+                    format!("Disk {} Used", disk.path),
+                    topics.disk_state.clone(),
+                    format!(
+                        "{{{{ value_json.disks.{}.used | default(none) }}}}",
+                        disk_id
+                    ),
+                )
+                .with_unit("B")
+                .with_device_class("data_size")
+                .with_state_class("measurement")
+                .with_icon("mdi:harddisk"),
+            );
 
-        components.insert(
-            format!("disk_{}_available", disk_id),
-            Component::sensor(
-                identity,
-                &format!("disk_{}_available", disk_id),
-                format!("Disk {} Available", disk.mount_point),
-                topics.disk_state.clone(),
-                format!(
-                    "{{{{ value_json.disks.{}.available | default(none) }}}}",
-                    disk_id
-                ),
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("measurement")
-            .with_icon("mdi:harddisk"),
-        );
+            components.insert(
+                format!("disk_{}_available", disk_id),
+                Component::sensor(
+                    identity,
+                    &format!("disk_{}_available", disk_id),
+                    format!("Disk {} Available", disk.path),
+                    topics.disk_state.clone(),
+                    format!(
+                        "{{{{ value_json.disks.{}.available | default(none) }}}}",
+                        disk_id
+                    ),
+                )
+                .with_unit("B")
+                .with_device_class("data_size")
+                .with_state_class("measurement")
+                .with_icon("mdi:harddisk"),
+            );
 
-        components.insert(
-            format!("disk_{}_total", disk_id),
-            Component::sensor(
-                identity,
-                &format!("disk_{}_total", disk_id),
-                format!("Disk {} Total", disk.mount_point),
-                topics.disk_info_state.clone(),
-                format!(
-                    "{{{{ value_json.disks.{}.total | default(none) }}}}",
-                    disk_id
-                ),
-            )
-            .with_unit("B")
-            .with_device_class("data_size")
-            .with_state_class("measurement")
-            .with_icon("mdi:harddisk"),
-        );
+            components.insert(
+                format!("disk_{}_total", disk_id),
+                Component::sensor(
+                    identity,
+                    &format!("disk_{}_total", disk_id),
+                    format!("Disk {} Total", disk.path),
+                    topics.disk_info_state.clone(),
+                    format!(
+                        "{{{{ value_json.disks.{}.total | default(none) }}}}",
+                        disk_id
+                    ),
+                )
+                .with_unit("B")
+                .with_device_class("data_size")
+                .with_state_class("measurement")
+                .with_icon("mdi:harddisk"),
+            );
 
-        components.insert(
-            format!("disk_{}_usage", disk_id),
-            Component::sensor(
-                identity,
-                &format!("disk_{}_usage", disk_id),
-                format!("Disk {} Usage", disk.mount_point),
-                topics.disk_state.clone(),
-                format!(
-                    "{{{{ value_json.disks.{}.usage | default(none) }}}}",
-                    disk_id
-                ),
-            )
-            .with_unit("%")
-            .with_state_class("measurement")
-            .with_precision(1)
-            .with_icon("mdi:harddisk"),
-        );
+            components.insert(
+                format!("disk_{}_usage", disk_id),
+                Component::sensor(
+                    identity,
+                    &format!("disk_{}_usage", disk_id),
+                    format!("Disk {} Usage", disk.path),
+                    topics.disk_state.clone(),
+                    format!(
+                        "{{{{ value_json.disks.{}.usage | default(none) }}}}",
+                        disk_id
+                    ),
+                )
+                .with_unit("%")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:harddisk"),
+            );
+        }
     }
 
     components
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_device_discovery_message;
+    use crate::config::Config;
+    use crate::device::{Identity, Topics};
+    use crate::system::models::{
+        DiskInfoState, GpuInfoState, NetworkInfoState, NetworkInterfaceInfoPayload,
+    };
+    use std::collections::BTreeMap;
+
+    fn test_config() -> Config {
+        Config {
+            config_dir: None,
+            log_dir: None,
+            mqtt_host: "127.0.0.1".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: None,
+            mqtt_password: None,
+            discovery_prefix: "homeassistant".to_string(),
+            home_assistant_status_topic: "homeassistant/status".to_string(),
+            topic_prefix: "monitor/system".to_string(),
+            node_id: Some("test-node".to_string()),
+            device_name: Some("Test Node".to_string()),
+            host_metrics_enabled: true,
+            cpu_metrics_enabled: true,
+            gpu_metrics_enabled: true,
+            memory_metrics_enabled: true,
+            uptime_metrics_enabled: true,
+            disk_metrics_enabled: true,
+            network_metrics_enabled: true,
+            lighthouse_enabled: false,
+            lighthouse_secret_id: None,
+            lighthouse_secret_key: None,
+            lighthouse_session_token: None,
+            lighthouse_endpoint: "lighthouse.tencentcloudapi.com".to_string(),
+            lighthouse_region: None,
+            lighthouse_instance_id: None,
+            network_include_interfaces: vec!["Ethernet".to_string()],
+            disk_include_paths: vec!["/srv/data".to_string()],
+            enable_shutdown_button: false,
+            shutdown_payload: "shutdown".to_string(),
+            shutdown_cancel_payload: "cancel".to_string(),
+            shutdown_delay_secs: 30,
+            shutdown_dry_run: false,
+            cpu_interval_secs: 1,
+            gpu_interval_secs: 1,
+            lighthouse_interval_secs: 300,
+            memory_interval_secs: 5,
+            uptime_interval_secs: 300,
+            disk_interval_secs: 30,
+            network_interval_secs: 1,
+            cpu_change_threshold_pct: 1.0,
+            gpu_usage_change_threshold_pct: 1.0,
+            gpu_memory_change_threshold_mib: 8,
+            memory_change_threshold_mib: 8,
+            disk_change_threshold_mib: 32,
+            network_rate_change_threshold_bytes_per_sec: 10 * 1024,
+            network_total_change_threshold_bytes: 10 * 1024,
+        }
+    }
+
+    fn test_identity() -> Identity {
+        Identity {
+            node_id: "test-node".to_string(),
+            device_id: "ha-system-ronitor-test-node".to_string(),
+            discovery_object_id: "ha_system_ronitor_test_node".to_string(),
+            entity_id_prefix: "ha_system_ronitor_test_node".to_string(),
+            device_name: "Test Node".to_string(),
+            host_name: "test-host".to_string(),
+            os_name: "TestOS".to_string(),
+            os_version: "1.0".to_string(),
+        }
+    }
+
+    fn test_disk_info() -> DiskInfoState {
+        let mut disks = BTreeMap::new();
+        disks.insert(
+            "c".to_string(),
+            crate::system::models::DiskInfoPayload {
+                name: "Disk".to_string(),
+                path: "/srv/data".to_string(),
+                mount_point: "/".to_string(),
+                file_system: "ntfs".to_string(),
+                total: 100,
+            },
+        );
+        DiskInfoState { disks }
+    }
+
+    fn test_network_info() -> NetworkInfoState {
+        let mut interfaces = BTreeMap::new();
+        interfaces.insert(
+            "ethernet".to_string(),
+            NetworkInterfaceInfoPayload {
+                name: "Ethernet".to_string(),
+            },
+        );
+        NetworkInfoState { interfaces }
+    }
+
+    #[test]
+    fn discovery_omits_disabled_metric_groups() {
+        let mut config = test_config();
+        config.cpu_metrics_enabled = false;
+        config.memory_metrics_enabled = false;
+        config.disk_metrics_enabled = false;
+        config.network_metrics_enabled = false;
+
+        let identity = test_identity();
+        let topics = Topics::from_identity(&config, &identity);
+        let gpu_info = GpuInfoState {
+            gpu_name: "GPU".to_string(),
+            gpu_memory_total: 1024,
+        };
+
+        let message = build_device_discovery_message(
+            &config,
+            &identity,
+            &topics,
+            Some(&gpu_info),
+            Some(&test_disk_info()),
+            Some(&test_network_info()),
+        );
+
+        assert!(!message.payload.components.contains_key("cpu_usage"));
+        assert!(!message.payload.components.contains_key("memory_used"));
+        assert!(
+            !message
+                .payload
+                .components
+                .contains_key("network_download_rate")
+        );
+        assert!(!message.payload.components.contains_key("disk_c_used"));
+        assert!(message.payload.components.contains_key("gpu_usage"));
+        assert!(message.payload.components.contains_key("uptime"));
+    }
 }

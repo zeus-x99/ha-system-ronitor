@@ -345,6 +345,13 @@ where
         node_id = %identity.node_id,
         config_dir = ?config.config_dir,
         log_dir = ?config.log_dir,
+        host_metrics_enabled = config.host_metrics_enabled,
+        cpu_metrics_enabled = config.cpu_metrics_enabled,
+        gpu_metrics_enabled = config.gpu_metrics_enabled,
+        memory_metrics_enabled = config.memory_metrics_enabled,
+        uptime_metrics_enabled = config.uptime_metrics_enabled,
+        disk_metrics_enabled = config.disk_metrics_enabled,
+        network_metrics_enabled = config.network_metrics_enabled,
         cpu_interval_secs = config.cpu_interval_secs,
         gpu_interval_secs = config.gpu_interval_secs,
         lighthouse_interval_secs = config.lighthouse_interval_secs,
@@ -667,7 +674,7 @@ where
                 }
             }
             _ = cpu_interval.tick() => {
-                if !connected {
+                if !connected || !config.cpu_metrics_enabled {
                     continue;
                 }
 
@@ -698,7 +705,7 @@ where
                 }
             }
             _ = uptime_interval.tick() => {
-                if !connected {
+                if !connected || !config.uptime_metrics_enabled {
                     continue;
                 }
 
@@ -756,7 +763,7 @@ where
                 }
             }
             _ = gpu_interval.tick() => {
-                if !connected {
+                if !connected || !config.gpu_metrics_enabled {
                     continue;
                 }
 
@@ -830,7 +837,7 @@ where
                 }
             }
             _ = memory_interval.tick() => {
-                if !connected {
+                if !connected || !config.memory_metrics_enabled {
                     continue;
                 }
 
@@ -864,7 +871,7 @@ where
                 }
             }
             _ = disk_interval.tick() => {
-                if !connected {
+                if !connected || !config.disk_metrics_enabled {
                     continue;
                 }
 
@@ -900,7 +907,7 @@ where
                 }
             }
             _ = network_interval.tick() => {
-                if !connected {
+                if !connected || !config.network_metrics_enabled {
                     continue;
                 }
 
@@ -1436,9 +1443,19 @@ async fn publish_full_snapshot(
             config: context.config,
             identity: context.identity,
             topics: context.topics,
-            gpu_info: static_snapshot.gpu_info.as_ref(),
-            disk_info: &static_snapshot.disk_info,
-            network_info: &static_snapshot.network_info,
+            gpu_info: context
+                .config
+                .gpu_metrics_enabled
+                .then_some(static_snapshot.gpu_info.as_ref())
+                .flatten(),
+            disk_info: context
+                .config
+                .disk_metrics_enabled
+                .then_some(&static_snapshot.disk_info),
+            network_info: context
+                .config
+                .network_metrics_enabled
+                .then_some(&static_snapshot.network_info),
         },
         &mut discovery_state.last_payload,
         force_discovery,
@@ -1448,20 +1465,36 @@ async fn publish_full_snapshot(
         error!(%error, "failed to publish discovery payload");
         discovery_state.last_payload = None;
     }
-    publish_static_info(context.client, context.topics, &static_snapshot).await;
+    publish_static_info(
+        context.client,
+        context.topics,
+        context.config,
+        &static_snapshot,
+    )
+    .await;
 
-    if let Err(error) = publish_cpu_state(context.client, context.topics, &cpu_state).await {
-        error!(%error, "failed to publish CPU state");
-        published_states.cpu.clear();
+    if context.config.cpu_metrics_enabled {
+        if let Err(error) = publish_cpu_state(context.client, context.topics, &cpu_state).await {
+            error!(%error, "failed to publish CPU state");
+            published_states.cpu.clear();
+        } else {
+            published_states.cpu.mark_published(cpu_state);
+        }
     } else {
-        published_states.cpu.mark_published(cpu_state);
+        published_states.cpu.clear();
     }
 
-    if let Err(error) = publish_uptime_state(context.client, context.topics, &uptime_state).await {
-        error!(%error, "failed to publish uptime state");
-        published_states.uptime.clear();
+    if context.config.uptime_metrics_enabled {
+        if let Err(error) =
+            publish_uptime_state(context.client, context.topics, &uptime_state).await
+        {
+            error!(%error, "failed to publish uptime state");
+            published_states.uptime.clear();
+        } else {
+            published_states.uptime.mark_published(uptime_state);
+        }
     } else {
-        published_states.uptime.mark_published(uptime_state);
+        published_states.uptime.clear();
     }
 
     if context.config.enable_shutdown_button && context.config.shutdown_delay_secs > 0 {
@@ -1477,77 +1510,113 @@ async fn publish_full_snapshot(
         published_states.shutdown.clear();
     }
 
-    if let Some(gpu_state) = gpu_state {
-        if let Err(error) = publish_gpu_state(context.client, context.topics, &gpu_state).await {
-            error!(%error, "failed to publish GPU state");
-            published_states.gpu.clear();
-        } else {
-            published_states.gpu.mark_published(gpu_state);
+    if context.config.gpu_metrics_enabled {
+        if let Some(gpu_state) = gpu_state {
+            if let Err(error) = publish_gpu_state(context.client, context.topics, &gpu_state).await
+            {
+                error!(%error, "failed to publish GPU state");
+                published_states.gpu.clear();
+            } else {
+                published_states.gpu.mark_published(gpu_state);
+            }
         }
     } else {
         published_states.gpu.clear();
     }
 
-    if let Some(lighthouse_state) = lighthouse_state {
-        if let Err(error) =
-            publish_lighthouse_state(context.client, context.topics, &lighthouse_state).await
-        {
-            error!(%error, "failed to publish lighthouse state");
-            published_states.lighthouse.clear();
-        } else {
-            published_states.lighthouse.mark_published(lighthouse_state);
+    if context.config.lighthouse_enabled {
+        if let Some(lighthouse_state) = lighthouse_state {
+            if let Err(error) =
+                publish_lighthouse_state(context.client, context.topics, &lighthouse_state).await
+            {
+                error!(%error, "failed to publish lighthouse state");
+                published_states.lighthouse.clear();
+            } else {
+                published_states.lighthouse.mark_published(lighthouse_state);
+            }
         }
     } else {
         published_states.lighthouse.clear();
     }
 
-    if let Err(error) = publish_memory_state(context.client, context.topics, &memory_state).await {
-        error!(%error, "failed to publish memory state");
+    if context.config.memory_metrics_enabled {
+        if let Err(error) =
+            publish_memory_state(context.client, context.topics, &memory_state).await
+        {
+            error!(%error, "failed to publish memory state");
+            published_states.memory.clear();
+        } else {
+            published_states.memory.mark_published(memory_state);
+        }
+    } else {
         published_states.memory.clear();
-    } else {
-        published_states.memory.mark_published(memory_state);
     }
 
-    if let Err(error) = publish_disk_state(context.client, context.topics, &disk_state).await {
-        error!(%error, "failed to publish disk state");
+    if context.config.disk_metrics_enabled {
+        if let Err(error) = publish_disk_state(context.client, context.topics, &disk_state).await {
+            error!(%error, "failed to publish disk state");
+            published_states.disk.clear();
+        } else {
+            published_states.disk.mark_published(disk_state);
+        }
+    } else {
         published_states.disk.clear();
-    } else {
-        published_states.disk.mark_published(disk_state);
     }
 
-    if let Err(error) = publish_network_state(context.client, context.topics, &network_state).await
-    {
-        error!(%error, "failed to publish network state");
-        published_states.network.clear();
+    if context.config.network_metrics_enabled {
+        if let Err(error) =
+            publish_network_state(context.client, context.topics, &network_state).await
+        {
+            error!(%error, "failed to publish network state");
+            published_states.network.clear();
+        } else {
+            published_states.network.mark_published(network_state);
+        }
     } else {
-        published_states.network.mark_published(network_state);
+        published_states.network.clear();
     }
 }
 
-async fn publish_static_info(client: &AsyncClient, topics: &Topics, snapshot: &StaticSnapshot) {
-    if let Err(error) = publish_host_info_state(client, topics, &snapshot.host_info).await {
+async fn publish_static_info(
+    client: &AsyncClient,
+    topics: &Topics,
+    config: &Config,
+    snapshot: &StaticSnapshot,
+) {
+    if config.host_metrics_enabled
+        && let Err(error) = publish_host_info_state(client, topics, &snapshot.host_info).await
+    {
         error!(%error, "failed to publish host info state");
     }
 
-    if let Err(error) = publish_cpu_info_state(client, topics, &snapshot.cpu_info).await {
+    if config.cpu_metrics_enabled
+        && let Err(error) = publish_cpu_info_state(client, topics, &snapshot.cpu_info).await
+    {
         error!(%error, "failed to publish CPU info state");
     }
 
-    if let Some(gpu_info) = snapshot.gpu_info.as_ref()
+    if config.gpu_metrics_enabled
+        && let Some(gpu_info) = snapshot.gpu_info.as_ref()
         && let Err(error) = publish_gpu_info_state(client, topics, gpu_info).await
     {
         error!(%error, "failed to publish GPU info state");
     }
 
-    if let Err(error) = publish_memory_info_state(client, topics, &snapshot.memory_info).await {
+    if config.memory_metrics_enabled
+        && let Err(error) = publish_memory_info_state(client, topics, &snapshot.memory_info).await
+    {
         error!(%error, "failed to publish memory info state");
     }
 
-    if let Err(error) = publish_disk_info_state(client, topics, &snapshot.disk_info).await {
+    if config.disk_metrics_enabled
+        && let Err(error) = publish_disk_info_state(client, topics, &snapshot.disk_info).await
+    {
         error!(%error, "failed to publish disk info state");
     }
 
-    if let Err(error) = publish_network_info_state(client, topics, &snapshot.network_info).await {
+    if config.network_metrics_enabled
+        && let Err(error) = publish_network_info_state(client, topics, &snapshot.network_info).await
+    {
         error!(%error, "failed to publish network info state");
     }
 }

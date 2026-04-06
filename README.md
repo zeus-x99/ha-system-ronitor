@@ -72,8 +72,17 @@ discovery_prefix = "homeassistant"
 status_topic = "homeassistant/status"
 topic_prefix = "monitor/system"
 
+[cpu]
+enabled = true
+sampling_interval_secs = 1
+usage_threshold_pct = 1.0
+
 [network]
+enabled = true
+sampling_interval_secs = 1
 include_interfaces = ["Ethernet", "Wi-Fi"]
+rate_change_threshold_bps = 10240
+total_change_threshold_bytes = 10240
 ```
 
 3. 启动：
@@ -296,20 +305,39 @@ NixOS 模块示例：
                 node_id = "router";
                 name = "Router System Monitor";
               };
-              sampling.cpu.interval_secs = 1;
-              sampling.gpu.interval_secs = 1;
-              sampling.memory.interval_secs = 5;
-              sampling.network.interval_secs = 1;
-              sampling.uptime.interval_secs = 300;
-              sampling.disk.interval_secs = 30;
-              network.include_interfaces = [ "Ethernet" "Wi-Fi" ];
-              thresholds.cpu.usage_pct = 1.0;
-              thresholds.gpu = {
-                usage_pct = 1.0;
-                memory_change_mib = 8;
+              cpu = {
+                enabled = true;
+                sampling_interval_secs = 1;
+                usage_threshold_pct = 1.0;
               };
-              thresholds.memory.change_mib = 8;
-              thresholds.disk.change_mib = 32;
+              gpu = {
+                enabled = true;
+                sampling_interval_secs = 1;
+                usage_threshold_pct = 1.0;
+                memory_change_threshold_mib = 8;
+              };
+              memory = {
+                enabled = true;
+                sampling_interval_secs = 5;
+                change_threshold_mib = 8;
+              };
+              uptime = {
+                enabled = true;
+                sampling_interval_secs = 300;
+              };
+              disk = {
+                enabled = true;
+                sampling_interval_secs = 30;
+                change_threshold_mib = 32;
+                include_paths = [ "/" "/mnt/data" ];
+              };
+              network = {
+                enabled = true;
+                sampling_interval_secs = 1;
+                include_interfaces = [ "Ethernet" "Wi-Fi" ];
+                rate_change_threshold_bps = 10240;
+                total_change_threshold_bytes = 10240;
+              };
               shutdown = {
                 enable_button = false;
                 payload = "shutdown";
@@ -366,6 +394,49 @@ cargo run --example mqtt_peek
 cargo run --example mqtt_publish -- "monitor/system/test" "hello"
 ```
 
+## Metric Switches
+
+Each metric group now keeps its own `enabled`, sampling, and threshold settings together.
+Disabled groups are removed from MQTT discovery and no longer publish runtime updates.
+For disk metrics, `include_paths` must be configured or the disk group stays disabled.
+
+```toml
+[host]
+enabled = true
+
+[cpu]
+enabled = true
+sampling_interval_secs = 1
+usage_threshold_pct = 1.0
+
+[gpu]
+enabled = true
+sampling_interval_secs = 1
+usage_threshold_pct = 1.0
+memory_change_threshold_mib = 8
+
+[memory]
+enabled = false
+sampling_interval_secs = 5
+change_threshold_mib = 8
+
+[uptime]
+enabled = true
+sampling_interval_secs = 300
+
+[disk]
+enabled = true
+sampling_interval_secs = 30
+change_threshold_mib = 32
+include_paths = ["/", "/mnt/data"]
+
+[network]
+enabled = false
+sampling_interval_secs = 1
+rate_change_threshold_bps = 10240
+total_change_threshold_bytes = 10240
+```
+
 ## Tencent Cloud Lighthouse
 
 This project can optionally publish Tencent Cloud Lighthouse traffic package usage into the same
@@ -376,15 +447,13 @@ Add these fields to `config.toml` when you want to enable it:
 ```toml
 [lighthouse]
 enabled = true
+sampling_interval_secs = 300
 secret_id = "AKID..."
 secret_key = "..."
 region = "ap-chengdu"
 instance_id = "lhins-xxxxxxxx"
 # session_token = "..." # optional for STS credentials
 # endpoint = "lighthouse.tencentcloudapi.com"
-
-[sampling.lighthouse]
-interval_secs = 300
 ```
 
 When enabled, the integration publishes these additional sensors:

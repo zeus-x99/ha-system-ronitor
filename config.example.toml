@@ -1,123 +1,71 @@
-# 本地运行时，请先将此文件复制为 `config.toml`。
-# 如果已经安装为 Windows 服务，请将配置文件放到：
+# Copy this file to `config.toml` before running locally.
+# For the Windows service, place it at:
 # `C:\ProgramData\ha-system-ronitor\config\config.toml`
-#
-# 说明：
-# 1. `config.toml` 是本程序唯一的业务配置来源。
-# 2. `--config-dir` / `--log-dir` 只用于指定配置目录和日志目录，不用于覆盖下面这些业务字段。
 
 [mqtt]
-# MQTT 服务器主机名或 IP 地址。
 host = "10.0.0.1"
-# MQTT 服务器端口。
 port = 1883
-# MQTT 用户名；如果你的 Broker 允许匿名访问，可以留空或删除。
 username = "homeassistant"
-# MQTT 密码；如果你的 Broker 允许匿名访问，可以留空或删除。
 password = "change-me"
 
 [home_assistant]
-# Home Assistant MQTT 自动发现前缀。
 discovery_prefix = "homeassistant"
-# Home Assistant 的 birth/status 主题。
 status_topic = "homeassistant/status"
-# 本程序发布状态与可用性的 MQTT 主题前缀。
 topic_prefix = "monitor/system"
 
 [device]
-# 可选：手动指定稳定的 node_id。
-# 不填写时，程序会根据主机名自动生成。
 # node_id = "my-host"
-
-# 可选：Home Assistant 中显示的设备名称。
-# 不填写时，程序会使用“<主机名> System Monitor”。
 # name = "My Host System Monitor"
 
-[lighthouse]
-# Optional: enable Tencent Cloud Lighthouse traffic package monitoring.
-enabled = false
-# Required when enabled: SecretId / SecretKey for Tencent Cloud API.
-# secret_id = "AKID..."
-# secret_key = "..."
-# Optional when using STS temporary credentials.
-# session_token = "..."
-# Required when enabled: instance region and Lighthouse instance id.
-# region = "ap-chengdu"
-# instance_id = "lhins-xxxxxxxx"
-# Optional: override API endpoint for intl site or custom routing.
-# endpoint = "lighthouse.tencentcloudapi.com"
+[host]
+enabled = true
+
+[cpu]
+enabled = true
+sampling_interval_secs = 1
+usage_threshold_pct = 1.0
+
+[gpu]
+enabled = true
+sampling_interval_secs = 1
+usage_threshold_pct = 1.0
+memory_change_threshold_mib = 8
+
+[memory]
+enabled = true
+sampling_interval_secs = 5
+change_threshold_mib = 8
+
+[uptime]
+enabled = true
+sampling_interval_secs = 300
+
+[disk]
+enabled = true
+sampling_interval_secs = 30
+change_threshold_mib = 32
+include_paths = ["/", "/mnt/data"]
 
 [network]
-# 需要监控的网卡名称白名单。
-# 这里的名称必须和系统里的网卡名称一致，例如 Windows 常见的是 `Ethernet`、`Wi-Fi`。
-# 汇总网络流量和按网卡实体都会只统计这里列出的网卡。
-# 如果留空，则会监控所有非回环网卡。
+enabled = true
+sampling_interval_secs = 1
 include_interfaces = ["Ethernet", "Wi-Fi"]
+rate_change_threshold_bps = 10240
+total_change_threshold_bytes = 10240
 
-[sampling.cpu]
-# CPU 采样与发布间隔，单位：秒。
-interval_secs = 1
-
-[sampling.gpu]
-# GPU 采样与发布间隔，单位：秒。
-interval_secs = 1
-
-[sampling.lighthouse]
-# Tencent Cloud Lighthouse traffic package polling interval, in seconds.
-interval_secs = 300
-
-[sampling.memory]
-# 内存采样与发布间隔，单位：秒。
-interval_secs = 5
-
-[sampling.uptime]
-# 系统运行时间发布间隔，单位：秒。
-# 默认 300 秒，也就是 5 分钟更新一次。
-interval_secs = 300
-
-[sampling.disk]
-# 磁盘采样与发布间隔，单位：秒。
-interval_secs = 30
-
-[sampling.network]
-# 网络流量采样与发布间隔，单位：秒。
-# `network_download_rate` / `network_upload_rate` 会按这个周期更新。
-interval_secs = 1
-
-[thresholds.cpu]
-# CPU 使用率变化达到这个百分比后，才发布新值。
-usage_pct = 1.0
-
-[thresholds.gpu]
-# GPU 使用率变化达到这个百分比后，才发布新值。
-usage_pct = 1.0
-# GPU 显存变化达到这个 MiB 数后，才发布新值。
-memory_change_mib = 8
-
-[thresholds.memory]
-# 内存变化达到这个 MiB 数后，才发布新值。
-change_mib = 8
-
-[thresholds.disk]
-# 磁盘已用/可用空间变化达到这个 MiB 数后，才发布新值。
-change_mib = 32
-
-[thresholds.network]
-# 网络速率变化达到这个字节每秒阈值后，才发布新值。
-# 默认 10240，也就是 10 KB/s。
-rate_change_bps = 10240
-# 网络累计上下行总量变化达到这个字节阈值后，才发布新值。
-# 默认 10240，也就是 10 KB。
-total_change_bytes = 10240
+[lighthouse]
+enabled = false
+sampling_interval_secs = 300
+# secret_id = "AKID..."
+# secret_key = "..."
+# session_token = "..."
+# region = "ap-chengdu"
+# instance_id = "lhins-xxxxxxxx"
+# endpoint = "lighthouse.tencentcloudapi.com"
 
 [shutdown]
-# 是否在 Home Assistant 中暴露“关机 / 取消关机”按钮实体。
 enable_button = false
-# 按下“关机”按钮后写入 MQTT command topic 的 payload。
 payload = "shutdown"
-# 按下“取消关机”按钮后写入同一 command topic 的 payload。
 cancel_payload = "cancel"
-# 收到关机命令后延迟多少秒再真正执行；设为 0 表示立即关机。
 delay_secs = 30
-# 为 true 时只记录关机请求，不真正执行关机。
 dry_run = false

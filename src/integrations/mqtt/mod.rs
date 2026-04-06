@@ -19,8 +19,8 @@ pub struct DiscoveryPublishArgs<'a> {
     pub identity: &'a Identity,
     pub topics: &'a Topics,
     pub gpu_info: Option<&'a GpuInfoState>,
-    pub disk_info: &'a DiskInfoState,
-    pub network_info: &'a NetworkInfoState,
+    pub disk_info: Option<&'a DiskInfoState>,
+    pub network_info: Option<&'a NetworkInfoState>,
 }
 
 pub fn build_mqtt_options(config: &Config, identity: &Identity, topics: &Topics) -> MqttOptions {

@@ -19,14 +19,22 @@ pub struct FileConfig {
     pub home_assistant: HomeAssistantConfig,
     #[serde(default, skip_serializing_if = "DeviceConfig::is_empty")]
     pub device: DeviceConfig,
-    #[serde(default, skip_serializing_if = "LighthouseConfig::is_empty")]
-    pub lighthouse: LighthouseConfig,
+    #[serde(default, skip_serializing_if = "HostConfig::is_empty")]
+    pub host: HostConfig,
+    #[serde(default, skip_serializing_if = "CpuConfig::is_empty")]
+    pub cpu: CpuConfig,
+    #[serde(default, skip_serializing_if = "GpuConfig::is_empty")]
+    pub gpu: GpuConfig,
+    #[serde(default, skip_serializing_if = "MemoryConfig::is_empty")]
+    pub memory: MemoryConfig,
+    #[serde(default, skip_serializing_if = "UptimeConfig::is_empty")]
+    pub uptime: UptimeConfig,
+    #[serde(default, skip_serializing_if = "DiskConfig::is_empty")]
+    pub disk: DiskConfig,
     #[serde(default, skip_serializing_if = "NetworkConfig::is_empty")]
     pub network: NetworkConfig,
-    #[serde(default, skip_serializing_if = "SamplingConfig::is_empty")]
-    pub sampling: SamplingConfig,
-    #[serde(default, skip_serializing_if = "ThresholdsConfig::is_empty")]
-    pub thresholds: ThresholdsConfig,
+    #[serde(default, skip_serializing_if = "LighthouseConfig::is_empty")]
+    pub lighthouse: LighthouseConfig,
     #[serde(default, skip_serializing_if = "ShutdownConfig::is_empty")]
     pub shutdown: ShutdownConfig,
 }
@@ -57,87 +65,74 @@ pub struct DeviceConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct HostConfig {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+    pub usage_threshold_pct: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+    pub usage_threshold_pct: Option<f32>,
+    pub memory_change_threshold_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+    pub change_threshold_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UptimeConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiskConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+    pub change_threshold_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_interfaces: Vec<String>,
+    pub rate_change_threshold_bps: Option<u64>,
+    pub total_change_threshold_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LighthouseConfig {
     pub enabled: Option<bool>,
+    pub sampling_interval_secs: Option<u64>,
     pub secret_id: Option<String>,
     pub secret_key: Option<String>,
     pub session_token: Option<String>,
     pub endpoint: Option<String>,
     pub region: Option<String>,
     pub instance_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkConfig {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub include_interfaces: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SamplingConfig {
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub cpu: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub gpu: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub lighthouse: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub memory: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub uptime: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub disk: MetricSamplingConfig,
-    #[serde(default, skip_serializing_if = "MetricSamplingConfig::is_empty")]
-    pub network: MetricSamplingConfig,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetricSamplingConfig {
-    pub interval_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ThresholdsConfig {
-    #[serde(default, skip_serializing_if = "CpuThresholdConfig::is_empty")]
-    pub cpu: CpuThresholdConfig,
-    #[serde(default, skip_serializing_if = "GpuThresholdConfig::is_empty")]
-    pub gpu: GpuThresholdConfig,
-    #[serde(default, skip_serializing_if = "MetricThresholdConfig::is_empty")]
-    pub memory: MetricThresholdConfig,
-    #[serde(default, skip_serializing_if = "MetricThresholdConfig::is_empty")]
-    pub disk: MetricThresholdConfig,
-    #[serde(default, skip_serializing_if = "NetworkThresholdConfig::is_empty")]
-    pub network: NetworkThresholdConfig,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CpuThresholdConfig {
-    pub usage_pct: Option<f32>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GpuThresholdConfig {
-    pub usage_pct: Option<f32>,
-    pub memory_change_mib: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetricThresholdConfig {
-    pub change_mib: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkThresholdConfig {
-    pub rate_change_bps: Option<u64>,
-    pub total_change_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -257,73 +252,72 @@ impl DeviceConfig {
     }
 }
 
+impl HostConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+    }
+}
+
+impl CpuConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
+            && self.usage_threshold_pct.is_none()
+    }
+}
+
+impl GpuConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
+            && self.usage_threshold_pct.is_none()
+            && self.memory_change_threshold_mib.is_none()
+    }
+}
+
+impl MemoryConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
+            && self.change_threshold_mib.is_none()
+    }
+}
+
+impl UptimeConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.sampling_interval_secs.is_none()
+    }
+}
+
+impl DiskConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
+            && self.change_threshold_mib.is_none()
+            && self.include_paths.is_empty()
+    }
+}
+
+impl NetworkConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
+            && self.include_interfaces.is_empty()
+            && self.rate_change_threshold_bps.is_none()
+            && self.total_change_threshold_bytes.is_none()
+    }
+}
+
 impl LighthouseConfig {
     fn is_empty(&self) -> bool {
         self.enabled.is_none()
+            && self.sampling_interval_secs.is_none()
             && self.secret_id.is_none()
             && self.secret_key.is_none()
             && self.session_token.is_none()
             && self.endpoint.is_none()
             && self.region.is_none()
             && self.instance_id.is_none()
-    }
-}
-
-impl NetworkConfig {
-    fn is_empty(&self) -> bool {
-        self.include_interfaces.is_empty()
-    }
-}
-
-impl SamplingConfig {
-    fn is_empty(&self) -> bool {
-        self.cpu.is_empty()
-            && self.gpu.is_empty()
-            && self.lighthouse.is_empty()
-            && self.memory.is_empty()
-            && self.uptime.is_empty()
-            && self.disk.is_empty()
-            && self.network.is_empty()
-    }
-}
-
-impl MetricSamplingConfig {
-    fn is_empty(&self) -> bool {
-        self.interval_secs.is_none()
-    }
-}
-
-impl ThresholdsConfig {
-    fn is_empty(&self) -> bool {
-        self.cpu.is_empty()
-            && self.gpu.is_empty()
-            && self.memory.is_empty()
-            && self.disk.is_empty()
-            && self.network.is_empty()
-    }
-}
-
-impl CpuThresholdConfig {
-    fn is_empty(&self) -> bool {
-        self.usage_pct.is_none()
-    }
-}
-
-impl GpuThresholdConfig {
-    fn is_empty(&self) -> bool {
-        self.usage_pct.is_none() && self.memory_change_mib.is_none()
-    }
-}
-
-impl MetricThresholdConfig {
-    fn is_empty(&self) -> bool {
-        self.change_mib.is_none()
-    }
-}
-
-impl NetworkThresholdConfig {
-    fn is_empty(&self) -> bool {
-        self.rate_change_bps.is_none() && self.total_change_bytes.is_none()
     }
 }
 
