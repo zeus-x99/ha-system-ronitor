@@ -171,16 +171,12 @@ impl LighthouseReader {
 
         Ok(Some(LighthouseState {
             timestamp: Utc::now().to_rfc3339(),
-            lighthouse_instance_id: instance.instance_id,
-            lighthouse_package_id: package.traffic_package_id,
             lighthouse_used: package.traffic_used,
             lighthouse_total: package.traffic_package_total,
             lighthouse_remaining: package.traffic_package_remaining,
             lighthouse_overflow: package.traffic_overflow,
             lighthouse_usage: used_pct,
             lighthouse_status: package.status,
-            lighthouse_cycle_start: package.start_time,
-            lighthouse_cycle_end: package.end_time,
             lighthouse_deadline: package.deadline,
         }))
     }
@@ -290,8 +286,6 @@ struct InstanceTrafficPackage {
 
 #[derive(Debug, Deserialize)]
 struct TrafficPackage {
-    #[serde(rename = "TrafficPackageId")]
-    traffic_package_id: String,
     #[serde(rename = "TrafficUsed")]
     traffic_used: u64,
     #[serde(rename = "TrafficPackageTotal")]
@@ -300,8 +294,6 @@ struct TrafficPackage {
     traffic_package_remaining: u64,
     #[serde(rename = "TrafficOverflow")]
     traffic_overflow: u64,
-    #[serde(rename = "StartTime")]
-    start_time: String,
     #[serde(rename = "EndTime")]
     end_time: String,
     #[serde(rename = "Deadline")]

@@ -91,16 +91,12 @@ pub struct NetworkInterfaceStatePayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct LighthouseState {
     pub timestamp: String,
-    pub lighthouse_instance_id: String,
-    pub lighthouse_package_id: String,
     pub lighthouse_used: u64,
     pub lighthouse_total: u64,
     pub lighthouse_remaining: u64,
     pub lighthouse_overflow: u64,
     pub lighthouse_usage: f64,
     pub lighthouse_status: String,
-    pub lighthouse_cycle_start: String,
-    pub lighthouse_cycle_end: String,
     pub lighthouse_deadline: String,
 }
 
@@ -240,15 +236,11 @@ impl DiskState {
 
 impl LighthouseState {
     pub fn changed_from(&self, previous: &Self) -> bool {
-        self.lighthouse_instance_id != previous.lighthouse_instance_id
-            || self.lighthouse_package_id != previous.lighthouse_package_id
-            || self.lighthouse_used != previous.lighthouse_used
+        self.lighthouse_used != previous.lighthouse_used
             || self.lighthouse_total != previous.lighthouse_total
             || self.lighthouse_remaining != previous.lighthouse_remaining
             || self.lighthouse_overflow != previous.lighthouse_overflow
             || self.lighthouse_status != previous.lighthouse_status
-            || self.lighthouse_cycle_start != previous.lighthouse_cycle_start
-            || self.lighthouse_cycle_end != previous.lighthouse_cycle_end
             || self.lighthouse_deadline != previous.lighthouse_deadline
     }
 }
@@ -279,16 +271,12 @@ mod tests {
     fn sample_lighthouse_state() -> LighthouseState {
         LighthouseState {
             timestamp: "2026-04-05T00:00:00Z".to_string(),
-            lighthouse_instance_id: "lhins-example".to_string(),
-            lighthouse_package_id: "lhtfp-example".to_string(),
             lighthouse_used: 1,
             lighthouse_total: 10,
             lighthouse_remaining: 9,
             lighthouse_overflow: 0,
             lighthouse_usage: 10.0,
             lighthouse_status: "NETWORK_NORMAL".to_string(),
-            lighthouse_cycle_start: "2026-04-01T00:00:00Z".to_string(),
-            lighthouse_cycle_end: "2026-05-01T00:00:00Z".to_string(),
             lighthouse_deadline: "2030-01-01T00:00:00Z".to_string(),
         }
     }

@@ -458,16 +458,12 @@ instance_id = "lhins-xxxxxxxx"
 
 When enabled, the integration publishes these additional sensors:
 
-- `lighthouse_instance_id`
-- `lighthouse_package_id`
 - `lighthouse_used`
 - `lighthouse_total`
 - `lighthouse_remaining`
 - `lighthouse_overflow`
 - `lighthouse_usage`
 - `lighthouse_status`
-- `lighthouse_cycle_start`
-- `lighthouse_cycle_end`
 - `lighthouse_deadline`
 
 Notes:

@@ -436,32 +436,6 @@ fn build_components(
 
     if config.lighthouse_enabled {
         components.insert(
-            "lighthouse_instance_id".to_string(),
-            Component::sensor(
-                identity,
-                "lighthouse_instance_id",
-                "Tencent Cloud Lighthouse Instance ID",
-                topics.lighthouse_state.clone(),
-                "{{ value_json.lighthouse_instance_id | default(none) }}",
-            )
-            .with_entity_category("diagnostic")
-            .with_icon("mdi:cloud-outline"),
-        );
-
-        components.insert(
-            "lighthouse_package_id".to_string(),
-            Component::sensor(
-                identity,
-                "lighthouse_package_id",
-                "Tencent Cloud Lighthouse Package ID",
-                topics.lighthouse_state.clone(),
-                "{{ value_json.lighthouse_package_id | default(none) }}",
-            )
-            .with_entity_category("diagnostic")
-            .with_icon("mdi:identifier"),
-        );
-
-        components.insert(
             "lighthouse_used".to_string(),
             Component::sensor(
                 identity,
@@ -547,34 +521,6 @@ fn build_components(
             )
             .with_entity_category("diagnostic")
             .with_icon("mdi:check-network-outline"),
-        );
-
-        components.insert(
-            "lighthouse_cycle_start".to_string(),
-            Component::sensor(
-                identity,
-                "lighthouse_cycle_start",
-                "Tencent Cloud Lighthouse Cycle Start",
-                topics.lighthouse_state.clone(),
-                "{{ value_json.lighthouse_cycle_start | default(none) }}",
-            )
-            .with_device_class("timestamp")
-            .with_entity_category("diagnostic")
-            .with_icon("mdi:calendar-start"),
-        );
-
-        components.insert(
-            "lighthouse_cycle_end".to_string(),
-            Component::sensor(
-                identity,
-                "lighthouse_cycle_end",
-                "Tencent Cloud Lighthouse Cycle End",
-                topics.lighthouse_state.clone(),
-                "{{ value_json.lighthouse_cycle_end | default(none) }}",
-            )
-            .with_device_class("timestamp")
-            .with_entity_category("diagnostic")
-            .with_icon("mdi:calendar-end"),
         );
 
         components.insert(
