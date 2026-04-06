@@ -115,6 +115,10 @@ impl Collector {
         self.cpu_info.clone()
     }
 
+    pub fn cpu_package_temp_supported(&self) -> bool {
+        self.cpu_package_temp.is_some()
+    }
+
     pub fn memory_info(&self) -> MemoryInfoState {
         self.memory_info.clone()
     }

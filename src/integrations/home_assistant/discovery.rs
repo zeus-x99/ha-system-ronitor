@@ -183,11 +183,20 @@ pub fn build_device_discovery_message(
     config: &Config,
     identity: &Identity,
     topics: &Topics,
+    cpu_package_temp_supported: bool,
     gpu_info: Option<&GpuInfoState>,
     disks: Option<&DiskInfoState>,
     network_info: Option<&NetworkInfoState>,
 ) -> DeviceDiscoveryMessage {
-    let components = build_components(config, identity, topics, gpu_info, disks, network_info);
+    let components = build_components(
+        config,
+        identity,
+        topics,
+        cpu_package_temp_supported,
+        gpu_info,
+        disks,
+        network_info,
+    );
 
     let payload = DeviceDiscoveryPayload {
         device: DeviceInfo {
@@ -221,6 +230,7 @@ fn build_components(
     config: &Config,
     identity: &Identity,
     topics: &Topics,
+    cpu_package_temp_supported: bool,
     gpu_info: Option<&GpuInfoState>,
     disks: Option<&DiskInfoState>,
     network_info: Option<&NetworkInfoState>,
@@ -243,21 +253,23 @@ fn build_components(
             .with_icon("mdi:chip"),
         );
 
-        components.insert(
-            "cpu_package_temp".to_string(),
-            Component::sensor(
-                identity,
-                "cpu_package_temp",
-                "CPU Package Temperature",
-                topics.cpu_state.clone(),
-                "{{ value_json.cpu_package_temp | default(none) }}",
-            )
-            .with_unit(CELSIUS_UNIT)
-            .with_device_class("temperature")
-            .with_state_class("measurement")
-            .with_precision(1)
-            .with_icon("mdi:thermometer"),
-        );
+        if cpu_package_temp_supported {
+            components.insert(
+                "cpu_package_temp".to_string(),
+                Component::sensor(
+                    identity,
+                    "cpu_package_temp",
+                    "CPU Package Temperature",
+                    topics.cpu_state.clone(),
+                    "{{ value_json.cpu_package_temp | default(none) }}",
+                )
+                .with_unit(CELSIUS_UNIT)
+                .with_device_class("temperature")
+                .with_state_class("measurement")
+                .with_precision(1)
+                .with_icon("mdi:thermometer"),
+            );
+        }
 
         components.insert(
             "cpu_model".to_string(),
@@ -957,6 +969,7 @@ mod tests {
             &config,
             &identity,
             &topics,
+            false,
             Some(&gpu_info),
             Some(&test_disk_info()),
             Some(&test_network_info()),
@@ -973,5 +986,25 @@ mod tests {
         assert!(!message.payload.components.contains_key("disk_c_used"));
         assert!(message.payload.components.contains_key("gpu_usage"));
         assert!(message.payload.components.contains_key("uptime"));
+    }
+
+    #[test]
+    fn discovery_omits_cpu_package_temp_when_not_supported() {
+        let config = test_config();
+        let identity = test_identity();
+        let topics = Topics::from_identity(&config, &identity);
+
+        let message = build_device_discovery_message(
+            &config,
+            &identity,
+            &topics,
+            false,
+            None,
+            Some(&test_disk_info()),
+            Some(&test_network_info()),
+        );
+
+        assert!(!message.payload.components.contains_key("cpu_package_temp"));
+        assert!(message.payload.components.contains_key("cpu_usage"));
     }
 }

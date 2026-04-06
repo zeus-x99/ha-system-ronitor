@@ -61,6 +61,7 @@ struct FullSnapshot {
 struct StaticSnapshot {
     host_info: HostInfoState,
     cpu_info: CpuInfoState,
+    cpu_package_temp_supported: bool,
     gpu_info: Option<GpuInfoState>,
     memory_info: MemoryInfoState,
     disk_info: DiskInfoState,
@@ -1443,6 +1444,7 @@ async fn publish_full_snapshot(
             config: context.config,
             identity: context.identity,
             topics: context.topics,
+            cpu_package_temp_supported: static_snapshot.cpu_package_temp_supported,
             gpu_info: context
                 .config
                 .gpu_metrics_enabled
@@ -1625,6 +1627,7 @@ fn collect_static_snapshot(collector: &Collector) -> StaticSnapshot {
     StaticSnapshot {
         host_info: collector.host_info(),
         cpu_info: collector.cpu_info(),
+        cpu_package_temp_supported: collector.cpu_package_temp_supported(),
         gpu_info: collector.gpu_info(),
         memory_info: collector.memory_info(),
         disk_info: collector.disk_info(),
