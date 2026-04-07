@@ -91,6 +91,7 @@ const SUBSCRIPTION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const NODE_LOCK_SYNC_TIMEOUT: Duration = Duration::from_millis(400);
 const NODE_LOCK_CLAIM_WINDOW: Duration = Duration::from_millis(800);
 const NODE_LOCK_CONFIRM_TIMEOUT: Duration = Duration::from_millis(800);
+const NODE_LOCK_REACQUIRE_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct NodeLockGuard {
@@ -115,6 +116,29 @@ enum NodeLockStatus {
     Claiming,
     Online,
     Offline,
+}
+
+#[derive(Debug)]
+enum NodeLockLossReason {
+    Connection(String),
+    Overwritten(String),
+    InvalidPayload(String),
+    TaskStopped(String),
+}
+
+impl NodeLockLossReason {
+    fn message(&self) -> &str {
+        match self {
+            Self::Connection(message)
+            | Self::Overwritten(message)
+            | Self::InvalidPayload(message)
+            | Self::TaskStopped(message) => message,
+        }
+    }
+
+    fn is_recoverable(&self) -> bool {
+        matches!(self, Self::Connection(_) | Self::TaskStopped(_))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -338,8 +362,10 @@ where
 {
     let identity = Identity::detect(&config);
     let topics = Topics::from_identity(&config, &identity);
-    let (node_lock_guard, mut node_lock_loss_rx) =
+    let (initial_node_lock_guard, initial_node_lock_loss_rx) =
         acquire_node_lock(&config, &topics, &identity).await?;
+    let mut node_lock_guard = Some(initial_node_lock_guard);
+    let mut node_lock_loss_rx = initial_node_lock_loss_rx;
 
     info!(
         device_name = %identity.device_name,
@@ -427,7 +453,7 @@ where
     let mut pending_shutdown: Option<PendingShutdown> = None;
     let mut shutdown_signal = Box::pin(shutdown_signal);
 
-    loop {
+    'run_loop: loop {
         tokio::select! {
             maybe_elapsed = shutdown_elapsed_rx.recv() => {
                 let Some(elapsed) = maybe_elapsed else {
@@ -459,9 +485,72 @@ where
             }
             maybe_reason = node_lock_loss_rx.recv() => {
                 let reason = maybe_reason.unwrap_or_else(|| {
-                    format!("node lock task for node_id `{}` stopped unexpectedly", identity.node_id)
+                    NodeLockLossReason::TaskStopped(format!(
+                        "node lock task for node_id `{}` stopped unexpectedly",
+                        identity.node_id
+                    ))
                 });
-                error!(%reason, node_id = %identity.node_id, "node lock lost, stopping service");
+
+                if reason.is_recoverable() {
+                    warn!(
+                        reason = %reason.message(),
+                        node_id = %identity.node_id,
+                        retry_secs = NODE_LOCK_REACQUIRE_RETRY_INTERVAL.as_secs(),
+                        "node lock lost, attempting to reacquire"
+                    );
+                    if let Some(guard) = node_lock_guard.take() {
+                        guard.disconnect().await;
+                    }
+
+                    loop {
+                        match acquire_node_lock(&config, &topics, &identity).await {
+                            Ok((new_guard, new_loss_rx)) => {
+                                node_lock_guard = Some(new_guard);
+                                node_lock_loss_rx = new_loss_rx;
+                                info!(node_id = %identity.node_id, "reacquired node lock");
+                                break;
+                            }
+                            Err(error) => {
+                                warn!(
+                                    %error,
+                                    retry_secs = NODE_LOCK_REACQUIRE_RETRY_INTERVAL.as_secs(),
+                                    "failed to reacquire node lock, retrying"
+                                );
+                                tokio::select! {
+                                    _ = tokio::time::sleep(NODE_LOCK_REACQUIRE_RETRY_INTERVAL) => {}
+                                    _ = &mut shutdown_signal => {
+                                        info!("shutdown signal received while reacquiring node lock");
+                                        if cancel_pending_shutdown(&mut pending_shutdown) {
+                                            info!("cleared pending shutdown because service is stopping");
+                                            if connected {
+                                                sync_shutdown_state(
+                                                    &client,
+                                                    &topics,
+                                                    &config,
+                                                    pending_shutdown.as_ref(),
+                                                    &mut published_states,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        if connected {
+                                            publish_availability(&client, &topics, false).await?;
+                                        }
+                                        client.disconnect().await?;
+                                        break 'run_loop;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                error!(
+                    reason = %reason.message(),
+                    node_id = %identity.node_id,
+                    "node lock lost, stopping service"
+                );
                 if cancel_pending_shutdown(&mut pending_shutdown) {
                     info!("cleared pending shutdown because node lock was lost");
                     if connected {
@@ -479,7 +568,9 @@ where
                     publish_availability(&client, &topics, false).await?;
                 }
                 client.disconnect().await?;
-                node_lock_guard.disconnect().await;
+                if let Some(guard) = node_lock_guard.take() {
+                    guard.disconnect().await;
+                }
                 break;
             }
             _ = &mut shutdown_signal => {
@@ -501,7 +592,9 @@ where
                     publish_availability(&client, &topics, false).await?;
                 }
                 client.disconnect().await?;
-                node_lock_guard.release().await;
+                if let Some(guard) = node_lock_guard.take() {
+                    guard.release().await;
+                }
                 break;
             }
             event = eventloop.poll() => {
@@ -953,7 +1046,7 @@ async fn acquire_node_lock(
     config: &Config,
     topics: &Topics,
     identity: &Identity,
-) -> Result<(NodeLockGuard, UnboundedReceiver<String>)> {
+) -> Result<(NodeLockGuard, UnboundedReceiver<NodeLockLossReason>)> {
     let instance_id = build_lock_instance_id(identity);
     let claiming_payload = NodeLockPayload::new(identity, &instance_id, NodeLockStatus::Claiming);
     let online_payload = NodeLockPayload::new(identity, &instance_id, NodeLockStatus::Online);
@@ -1094,18 +1187,18 @@ async fn acquire_node_lock(
                         Ok(lock_payload)
                             if lock_payload.is_online_for_other_instance(&instance_id_for_task) =>
                         {
-                            let _ = loss_tx.send(format!(
+                            let _ = loss_tx.send(NodeLockLossReason::Overwritten(format!(
                                 "node lock `{}` was overwritten by instance `{}` on host `{}`",
                                 lock_topic, lock_payload.instance_id, lock_payload.host_name
-                            ));
+                            )));
                             break;
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            let _ = loss_tx.send(format!(
+                            let _ = loss_tx.send(NodeLockLossReason::InvalidPayload(format!(
                                 "failed to parse node lock payload on `{}`: {error:#}",
                                 lock_topic
-                            ));
+                            )));
                             break;
                         }
                     }
@@ -1113,10 +1206,10 @@ async fn acquire_node_lock(
                 Ok(Event::Outgoing(Outgoing::Disconnect)) => break,
                 Ok(_) => {}
                 Err(error) => {
-                    let _ = loss_tx.send(format!(
+                    let _ = loss_tx.send(NodeLockLossReason::Connection(format!(
                         "node lock MQTT connection failed for topic `{}`: {error:#}",
                         lock_topic
-                    ));
+                    )));
                     break;
                 }
             }
