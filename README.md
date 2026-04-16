@@ -163,6 +163,8 @@ include_interfaces = ["Ethernet", "Wi-Fi"]
 - Windows / Linux 上的 NVIDIA GPU：通过 `nvml-wrapper`
 - Linux 上的非 NVIDIA GPU：会尽量使用 sysfs 路径读取基础 GPU 信息
 - 如果当前平台拿不到 GPU 数据，对应实体不会创建或不会有值
+- NixOS 上如果默认动态库搜索路径找不到 NVML，会回退到 `/run/opengl-driver/lib/libnvidia-ml.so.1`
+- 如需覆盖默认行为，也可以通过 `HA_MONITOR_NVML_LIB_PATH=/custom/path/libnvidia-ml.so.1` 手工指定
 
 ## Home Assistant 接入
 
@@ -355,7 +357,7 @@ NixOS 模块示例：
 - Nix 模块会把 `settings` 渲染为 `config.toml`
 - MQTT 密码建议通过 `mqttPasswordFile` 提供，避免把密钥写进 Nix store
 - 设置了 `mqttPasswordFile` 后，模块会在服务启动前生成运行时 `config.toml`，并显式通过 `--config-dir` 指向它
-- `environmentFile` 只适合传递运行时环境变量，比如 `RUST_LOG` 或 `HA_MONITOR_PAWNIO_AUTO_INSTALL`
+- `environmentFile` 只适合传递运行时环境变量，比如 `RUST_LOG`、`HA_MONITOR_PAWNIO_AUTO_INSTALL` 或 `HA_MONITOR_NVML_LIB_PATH`
 - 不再通过 `environmentFile` 覆盖业务配置字段
 
 ## 项目结构

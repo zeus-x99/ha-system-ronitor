@@ -12,11 +12,23 @@ pub struct GpuReading {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod nvml_native {
+    #[cfg(target_os = "linux")]
+    use std::path::{Path, PathBuf};
+
     use chrono::Utc;
     use nvml_wrapper::{Nvml, enum_wrappers::device::TemperatureSensor};
     use tracing::debug;
 
     use crate::system::gpu::GpuReading;
+
+    #[cfg(target_os = "linux")]
+    const NVML_LIB_PATH_ENV: &str = "HA_MONITOR_NVML_LIB_PATH";
+
+    #[cfg(target_os = "linux")]
+    const NIXOS_NVML_LIB_PATHS: &[&str] = &[
+        "/run/opengl-driver/lib/libnvidia-ml.so.1",
+        "/run/opengl-driver/lib/libnvidia-ml.so",
+    ];
 
     #[derive(Debug)]
     pub struct NvidiaGpuReader {
@@ -27,13 +39,7 @@ mod nvml_native {
 
     impl NvidiaGpuReader {
         pub fn new() -> Option<Self> {
-            let nvml = match Nvml::init() {
-                Ok(nvml) => nvml,
-                Err(error) => {
-                    debug!(%error, "NVML init failed");
-                    return None;
-                }
-            };
+            let nvml = init_nvml()?;
             let device_index = select_nvml_device_index(&nvml)?;
             let device = nvml.device_by_index(device_index).ok()?;
             let device_name = device.name().ok()?;
@@ -63,6 +69,73 @@ mod nvml_native {
                 gpu_memory_total: memory.total,
                 gpu_memory_usage: percent(memory_used, memory.total),
             })
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn init_nvml() -> Option<Nvml> {
+        match Nvml::init() {
+            Ok(nvml) => return Some(nvml),
+            Err(error) => {
+                debug!(%error, "NVML init failed with default loader path");
+            }
+        }
+
+        for path in nixos_nvml_paths() {
+            match Nvml::builder().lib_path(path.as_os_str()).init() {
+                Ok(nvml) => {
+                    debug!(path = %path.display(), "NVML init succeeded with NixOS library path");
+                    return Some(nvml);
+                }
+                Err(error) => {
+                    debug!(path = %path.display(), %error, "NVML init failed with NixOS library path");
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn init_nvml() -> Option<Nvml> {
+        match Nvml::init() {
+            Ok(nvml) => Some(nvml),
+            Err(error) => {
+                debug!(%error, "NVML init failed");
+                None
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn nixos_nvml_paths() -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        if let Ok(path) = std::env::var(NVML_LIB_PATH_ENV) {
+            push_nvml_path(&mut candidates, path.trim());
+        }
+
+        for path in NIXOS_NVML_LIB_PATHS {
+            push_nvml_path(&mut candidates, path);
+        }
+
+        candidates
+    }
+
+    #[cfg(target_os = "linux")]
+    fn push_nvml_path(candidates: &mut Vec<PathBuf>, raw_path: &str) {
+        if raw_path.is_empty() {
+            return;
+        }
+
+        let path = Path::new(raw_path);
+        if !path.exists() {
+            return;
+        }
+
+        let path = path.to_path_buf();
+        if !candidates.iter().any(|candidate| candidate == &path) {
+            candidates.push(path);
         }
     }
 
